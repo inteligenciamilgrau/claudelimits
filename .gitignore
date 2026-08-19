@@ -1,0 +1,43 @@
+# Caminho do node desta máquina, gravado pelo instalar.js.
+# É o único arquivo do projeto que contém caminho absoluto — e por isso não
+# entra no repositório.
+node-local.txt
+
+# A skill literal é GERADA pelo instalar.js a partir de skill/SKILL.modelo.md,
+# com os caminhos desta máquina. Se alguém gerar dentro da pasta por engano,
+# não vai junto.
+skill/SKILL.md
+
+# O estado fica em ~/.claude/cota/, fora daqui. Estes padrões são só rede de
+# segurança caso alguém rode com CLAUDE_COTA_DIR apontando para cá.
+estado.json
+config.json
+batimento.json
+aviso-ultimo.json
+vigia-ultimo.json
+onda-atual.json
+agentes.jsonl
+ondas.jsonl
+afericoes.jsonl
+sessoes/
+em-voo/
+
+# Node
+node_modules/
+npm-debug.log*
+package-lock.json
+
+# Sistema e editor
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+*~
+.vscode/
+.idea/
+
+# Backups e temporários
+*.bak
+*.bak-*
+*.tmp
+*.orig

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Atalho para chamar o cota de qualquer diretório, no Linux e no macOS.
+#   ./cota
+#   ./cota cabe 10
+# Ponha esta pasta no PATH e vira só "cota".
+#
+# Equivalente POSIX do cota.cmd. A ordem de busca do node é a mesma dos três
+# invólucros, para não haver um jeito diferente por plataforma:
+#   1. node-local.txt  (gravado pelo instalar.js, fora do git)
+#   2. $COTA_NODE
+#   3. node no PATH
+
+# `readlink -f` não existe no macOS por padrão, então nada de resolver link
+# simbólico aqui: este idioma é POSIX puro e funciona nos dois.
+DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+NODE=""
+if [ -r "$DIR/node-local.txt" ]; then
+  NODE=$(head -n 1 "$DIR/node-local.txt" | tr -d '\r\n')
+fi
+[ -n "$NODE" ] && [ ! -x "$NODE" ] && NODE=""
+[ -z "$NODE" ] && [ -n "$COTA_NODE" ] && [ -x "$COTA_NODE" ] && NODE="$COTA_NODE"
+[ -z "$NODE" ] && NODE="node"
+
+exec "$NODE" "$DIR/cota.js" "$@"

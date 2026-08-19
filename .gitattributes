@@ -1,0 +1,26 @@
+# Final de linha determinístico, independente do autocrlf de quem clonar.
+#
+# Não é preciosismo: um .cmd com final de linha LF pode ser interpretado errado
+# pelo cmd.exe, e este projeto depende de um .cmd e de um .ps1 para funcionar no
+# Windows. Fixar aqui evita um bug que só aparece na máquina dos outros.
+
+*           text=auto
+
+*.js        text eol=lf
+*.json      text eol=lf
+*.md        text eol=lf
+*.gitignore text eol=lf
+
+# Script de shell TEM que sair com LF. Com CRLF o Linux responde
+# "bad interpreter: /bin/sh^M" e o arquivo fica inútil justamente para quem
+# ele serve. O `cota` não tem extensão, então precisa da regra pelo nome.
+cota        text eol=lf
+*.sh        text eol=lf
+
+*.cmd       text eol=crlf
+*.bat       text eol=crlf
+*.ps1       text eol=crlf
+
+# node-local.txt é gerado pelo instalador e não versionado, mas se alguém
+# forçar, que seja legível pelos dois wrappers.
+*.txt       text eol=crlf
