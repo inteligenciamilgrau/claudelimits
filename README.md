@@ -53,9 +53,9 @@ Com isso a ferramenta:
 
 - **avisa** quando a janela passa do limiar, de carona na sua mensagem;
 - **pergunta antes** de o agente lançar subagentes com a cota alta;
-- **mede** quanto custa cada subagente — o que a cota sobe enquanto eles
-  rodam, dividido pelo tempo de cada um — e com isso responde quantos cabem
-  agora;
+- **mede** o ritmo de um subagente — quanto da janela ele gasta por hora
+  rodando — e quanto tempo eles costumam rodar, e com isso responde quantos
+  cabem agora;
 - **vigia** a cota enquanto um workflow roda.
 
 ## Peças
@@ -265,11 +265,15 @@ vai o próximo. Quando o executável muda, o `cota sondar` avisa:
 - **Não há projeção de consumo, de propósito.** O uso real é por rajadas, e
   nenhuma média entre os regimes descreve qualquer um deles. O ritmo mostrado é
   medição da última hora, não previsão.
-- **O custo por subagente é divisão, não atribuição.** O que a cota sobe num
-  trecho é dividido entre os subagentes que rodaram nele, pelo tempo de cada
-  um — de todas as sessões, porque os hooks são globais. Quem gasta mais por
-  minuto que os outros sai subestimado, e vice-versa. A conversa principal das
-  sessões também entra na conta e infla o custo — o lado seguro.
+- **O ritmo por subagente é divisão, não atribuição.** O que a cota sobe num
+  trecho é dividido pelas horas de subagente rodando nele — de todas as
+  sessões, porque os hooks são globais. Subagentes no mesmo trecho saem com o
+  mesmo ritmo: um Opus pesado ao lado de um Haiku leve não se distinguem ali.
+  A conversa principal das sessões também entra na conta e infla o ritmo — o
+  lado seguro.
+- **Agente longo atravessa janelas.** Um subagente de 12h gasta de três
+  janelas de 5h. O `cabe` conta, na janela de 5h, só o tempo até o reset; a
+  semanal paga a duração inteira, e para trabalho longo é ela que manda.
 - **O sub-limite semanal por modelo é mostrado, mas não decide:** a admissão
   usa só a janela de 5h e a semanal geral.
 - **Relógio da máquina torto = countdown mentiroso.** O `audit` desconfia.

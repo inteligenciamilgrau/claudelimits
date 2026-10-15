@@ -3,27 +3,29 @@
 /*
  * medidor.js — hooks SubagentStart e SubagentStop.
  *
- * Mede quanto custa um subagente, em % da janela, e vigia a cota durante o
+ * Mede o RITMO de um subagente — quanto da janela ele gasta por hora rodando
+ * (D48) — e quanto tempo eles costumam rodar; e vigia a cota durante o
  * trabalho (D30).
  *
  * D47 — a medição é feita em TRECHOS. A cota é um número só, da conta
- * inteira: o custo de um subagente não se lê direto. Então a cota é lida em
- * marcos, e o que ela subiu entre dois marcos é dividido entre os subagentes
- * que rodaram naquele trecho, pelo TEMPO que cada um rodou dentro dele. Quando
- * um subagente termina, a soma das partes dele é o custo, e entra na base na
- * hora — sem esperar os outros.
+ * inteira: o gasto de um subagente não se lê direto. Então a cota é lida em
+ * marcos, e cada trecho entre dois marcos vira uma amostra de ritmo: o que a
+ * cota subiu, dividido pelas horas de subagente rodando nele (de todas as
+ * sessões — os hooks são globais).
  *
  *   10:00 marco 40%   A e B começam
- *   10:03 B termina → marco 46%: 6% pelos 3min de A e de B → B custou 3%
- *   10:05 A termina → marco 48%: 2% só para A               → A custou 3+2 = 5%
+ *   10:03 B termina → marco 46%: 6% em 6min de subagente (3 de A, 3 de B)
+ *   10:05 A termina → marco 48%: 2% em 2min de subagente (só A)
+ *                     ritmo: 8% em 8min de subagente = 60%/h por subagente
  *
- * Antes (D31) a unidade era a onda inteira, do primeiro subagente ao último,
- * e ela só fechava com o céu vazio. Mas os hooks são globais: com agentes de
- * outra sessão rodando, o céu quase nunca esvaziava, e nada era medido.
+ * Trecho que atravessa um reset não tem Δ naquela janela (o número de antes é
+ * da janela velha): é pulado nela, e só nela — os trechos antes e depois
+ * continuam valendo, e um subagente de 12h entra na conta como qualquer outro.
+ * A duração de cada um é gravada quando ele termina.
  *
  * Um subagente que termina só lê a cota se o trecho em curso já tiver
- * `medidor.trecho_s` (2min) ou se o céu esvaziou; senão a parte dele sai no
- * próximo marco. Assim a leitura (~1,5s) não segura cada um que termina.
+ * `medidor.trecho_s` (2min) ou se o céu esvaziou; senão o trecho segue. Assim
+ * a leitura (~1,5s) não segura cada um que termina.
  *
  * Nada aqui faz leitura-alteração-regravação de arquivo compartilhado (D33):
  * cada subagente grava só os próprios arquivos, e quem fecha um trecho o
@@ -40,11 +42,6 @@ const sonda = require('../lib/sonda');
 
 const VOO = core.F.emVoo;
 const FIM = core.F.terminados;
-const ACUM = core.F.acumulado;
-
-// Quem começou até isto antes da cadeia de marcos ainda conta como coberto
-// por ela: subagentes disparados juntos começam com milissegundos de diferença.
-const FOLGA_CADEIA_MS = 5000;
 
 function lerStdin() {
   try { return JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) { return null; }
@@ -75,10 +72,10 @@ function fechandoAgora() {
   });
 }
 
-// A cadeia de marcos acabou sem medida: nada dela serve para a próxima.
+// Os trechos acabaram sem medida: nada daqui serve para o próximo.
 function descartarTudo() {
   apagar(core.F.marco);
-  for (const d of [FIM, ACUM]) for (const n of listar(d)) apagar(path.join(d, n));
+  for (const n of listar(FIM)) apagar(path.join(FIM, n));
 }
 
 /*
@@ -116,7 +113,9 @@ function sessaoViva(sessionId) {
  *     registro não diz nada, ou para o agente que morreu sozinho numa sessão
  *     que segue aberta.
  *
- * A parte que ele acumulou se perde: não há como saber o que era dele.
+ * Dali em diante ele sai da conta: se ainda viveu parte do trecho em curso,
+ * o tempo dele deixa de dividir o Δ — o que infla o ritmo dos outros, o lado
+ * seguro de errar.
  */
 function limparOrfaos(cfg, encerrada) {
   const vivas = new Map();
@@ -128,12 +127,12 @@ function limparOrfaos(cfg, encerrada) {
   for (const e of ler(VOO)) {
     const velho = Date.now() - t0De(e) > cfg.medidor.orfao_max_s * 1000;
     if (viva(e.sessao) === false || velho) {
-      apagar(e.arquivo); apagar(arq(ACUM, e.id)); removidos++;
+      apagar(e.arquivo); removidos++;
     }
   }
   if (!removidos || emVoo().length || fechandoAgora()) return;
-  // O céu esvaziou com a saída deles. Quem já tinha terminado ainda tem uma
-  // parte para receber: fecha o trecho. Sem ninguém, a cadeia acaba.
+  // O céu esvaziou com a saída deles. O tempo de quem já tinha terminado
+  // ainda vale como amostra: fecha o trecho. Sem ninguém, acaba ali.
   if (listar(FIM).length && fs.existsSync(core.F.marco)) fecharTrecho(cfg);
   else descartarTudo();
 }
@@ -147,11 +146,11 @@ function inicio(ev, cfg) {
   });
 
   /*
-   * Sem marco, e ninguém fechando um trecho agora: abre uma cadeia. É o caso
-   * do primeiro subagente com o céu vazio — e também o de uma cadeia perdida
-   * com gente em voo, que assim se recupera sozinha. Quem já estava rodando
-   * antes da cadeia não tem o custo inteiro coberto e não vira amostra.
-   * Com alguém fechando, não abre: quem fecha grava o marco seguinte.
+   * Sem marco, e ninguém fechando um trecho agora: abre um. É o caso do
+   * primeiro subagente com o céu vazio — e também o de um marco perdido com
+   * gente em voo, que assim se recupera sozinho: quem já rodava entra no
+   * trecho com o tempo dele a partir daqui. Com alguém fechando, não abre:
+   * quem fecha grava o marco seguinte.
    */
   if (fs.existsSync(core.F.marco) || fechandoAgora()) return;
   sonda.garantirFrescoHook(cfg.sonda.idade_s);
@@ -160,7 +159,7 @@ function inicio(ev, cfg) {
   try {
     fs.writeFileSync(core.F.marco, JSON.stringify({
       t_ms: core.tMs(est), pct5: est.pct5, pct7: est.pct7,
-      reset5: est.reset5, reset7: est.reset7, cadeia_ms: agora,
+      reset5: est.reset5, reset7: est.reset7,
     }, null, 2), { flag: 'wx' });
   } catch (_) { /* outro abriu primeiro: correto, segue */ }
 }
@@ -170,25 +169,32 @@ function inicio(ev, cfg) {
 function fim(ev, cfg) {
   const meu = core.lerJson(arq(VOO, ev.agent_id), null);
   if (!meu) return;
+  const t1 = Date.now();
+  // A duração dele, para a admissão saber quanto um subagente costuma rodar.
+  // Não depende de leitura nenhuma: o início e o fim são dos hooks.
+  core.appendJsonl(core.F.agentes, {
+    t: core.agora(), tipo: meu.tipo || null, sessao: meu.sessao || null,
+    dur_s: Math.round((t1 - t0De(meu)) / 1000),
+  });
   // Grava o fim antes de sair do céu: em nenhum instante ele some dos dois.
-  core.gravarJson(arq(FIM, ev.agent_id), Object.assign({}, meu, { t1_ms: Date.now() }));
+  core.gravarJson(arq(FIM, ev.agent_id), Object.assign({}, meu, { t1_ms: t1 }));
   apagar(arq(VOO, ev.agent_id));
 
   const ultimo = emVoo().length === 0;
   const marco = core.lerJson(core.F.marco, null);
   if (!marco) {
-    // Sem cadeia não há o que medir; se ninguém mais roda, limpa.
+    // Sem marco não há trecho a fechar; se ninguém mais roda, limpa.
     if (ultimo && !fechandoAgora()) descartarTudo();
     return;
   }
-  // Trecho curto e ainda há gente: a parte dele sai no próximo marco.
+  // Trecho curto e ainda há gente: o tempo dele entra no próximo marco.
   if (!ultimo && Date.now() - core.num(marco.t_ms) < cfg.medidor.trecho_s * 1000) return;
   fecharTrecho(cfg);
 }
 
 /*
- * Fecha o trecho em curso: lê a cota, divide o que ela subiu pelo tempo de
- * cada subagente no trecho, e grava o custo de quem já terminou.
+ * Fecha o trecho em curso: lê a cota e grava o trecho — quanto ela subiu e
+ * quantas horas de subagente rodaram nele.
  *
  * Quem fecha reivindica o trecho renomeando o marco: dois fechando juntos, só
  * um consegue, e o outro segue sem esperar. A leitura tem de ser PEDIDA
@@ -200,7 +206,7 @@ function fecharTrecho(cfg) {
     const meu = core.F.marco + '.fechando.' + process.pid;
     try { fs.renameSync(core.F.marco, meu); } catch (_) { return; }
     // Renomear não muda a data do arquivo; sem isto o marco reivindicado
-    // pareceria velho, e um subagente que começasse agora abriria outra cadeia.
+    // pareceria velho, e um subagente que começasse agora abriria outro.
     try { const t = new Date(); fs.utimesSync(meu, t, t); } catch (_) {}
     const marco = core.lerJson(meu, null);
 
@@ -210,22 +216,22 @@ function fecharTrecho(cfg) {
 
     if (!marco || !est || core.tMs(est) < tFim) {
       // Sem leitura nova. Ainda há gente: devolve o marco, e o próximo fecha
-      // um trecho maior. Ninguém mais: a cadeia acaba sem medida — um Δ de
-      // número velho seria 0%, medição falsa que puxa a média para baixo.
+      // um trecho maior. Ninguém mais: o trecho acaba sem medida — um Δ de
+      // número velho seria 0%, medição falsa que puxa o ritmo para baixo.
       if (emVoo().length) { try { fs.renameSync(meu, core.F.marco); } catch (_) { apagar(meu); } }
       else { apagar(meu); descartarTudo(); }
       return;
     }
     apagar(meu);
-    repartir(marco, est, tFim);
+    registrarTrecho(marco, est, tFim);
 
-    // A cadeia continua se ainda há gente — em voo, ou que terminou durante a
-    // leitura e ficou para o próximo trecho.
+    // Há trecho seguinte se ainda há gente — em voo, ou que terminou durante a
+    // leitura e ficou para ele.
     if (emVoo().length || listar(FIM).length) {
       try {
         fs.writeFileSync(core.F.marco, JSON.stringify({
           t_ms: core.tMs(est), pct5: est.pct5, pct7: est.pct7,
-          reset5: est.reset5, reset7: est.reset7, cadeia_ms: marco.cadeia_ms,
+          reset5: est.reset5, reset7: est.reset7,
         }, null, 2), { flag: 'wx' });
       } catch (_) {}
     }
@@ -234,58 +240,43 @@ function fecharTrecho(cfg) {
   }
 }
 
-function repartir(marco, est, tFim) {
+/*
+ * Um trecho é uma amostra de ritmo: o Δ de cada janela e as horas de
+ * subagente nele, por tipo. Cada janela vale pelo próprio reset: se a de 5h
+ * virou no meio, o trecho ainda conta para a semanal (D48).
+ */
+function registrarTrecho(marco, est, tFim) {
   const ini = core.num(marco.t_ms);
   const fim = ler(FIM).filter(e => core.num(e.t1_ms) !== null && e.t1_ms <= tFim);
   const terminou = new Set(fim.map(e => e.id));
   // Quem mudou de pasta no meio da leitura aparece nas duas: vale o fim.
   const partes = fim.concat(ler(VOO).filter(e => !terminou.has(e.id) && t0De(e) < tFim));
-  const tempo = e => Math.max(0, Math.min(e.t1_ms || tFim, tFim) - Math.max(t0De(e), ini));
-  const total = partes.reduce((s, e) => s + tempo(e), 0);
+  const tempo = e => Math.max(0, Math.min(e.t1_ms || tFim, tFim) - Math.max(t0De(e), ini)) / 1000;
 
-  // A janela virou (ou o número caiu) no meio do trecho: o Δ é reset, não custo.
-  const valido = est.reset5 === marco.reset5 && core.num(est.pct5) !== null &&
-                 core.num(marco.pct5) !== null && est.pct5 >= marco.pct5;
-  const d5 = valido ? est.pct5 - marco.pct5 : null;
-  const d7 = valido && core.num(est.pct7) !== null && core.num(marco.pct7) !== null
-    ? est.pct7 - marco.pct7 : null;
+  const porTipo = {};
+  let seg = 0;
+  for (const e of partes) {
+    const s = tempo(e);
+    if (!(s > 0)) continue;
+    porTipo[e.tipo || 'desconhecido'] = (porTipo[e.tipo || 'desconhecido'] || 0) + s;
+    seg += s;
+  }
+  // A janela virou (ou o número caiu) no meio do trecho: ali o Δ é reset, não gasto.
+  const delta = (p, r) => (est[r] === marco[r] && core.num(est[p]) !== null &&
+    core.num(marco[p]) !== null && est[p] >= marco[p] ? est[p] - marco[p] : null);
+  const d5 = delta('pct5', 'reset5'), d7 = delta('pct7', 'reset7');
 
   core.appendJsonl(core.F.trechos, {
-    t: core.agora(), dur_s: Math.round((tFim - ini) / 1000), custo5: d5, custo7: d7,
-    agentes: partes.length, tempo_agentes_s: Math.round(total / 1000), valido,
+    t: core.agora(), dur_s: Math.round((tFim - ini) / 1000),
+    d5, d7, valido5: d5 !== null, valido7: d7 !== null,
+    seg: Math.round(seg), por_tipo: porTipo, agentes: partes.length,
   });
-
-  for (const e of partes) {
-    const a = core.lerJson(arq(ACUM, e.id), { s5: 0, s7: 0, trechos: 0, incompleto: false });
-    if (!valido) a.incompleto = true;
-    else if (total > 0) {
-      const fracao = tempo(e) / total;
-      a.s5 += d5 * fracao;
-      if (d7 !== null) a.s7 += d7 * fracao;
-      a.trechos++;
-    }
-    if (!terminou.has(e.id)) { core.gravarJson(arq(ACUM, e.id), a); continue; }
-
-    // Terminou: a soma das partes é o custo — se a cadeia cobriu a vida
-    // inteira dele. Quem começou antes dela (cadeia perdida e recomeçada)
-    // teria custo subcontado, o lado perigoso de errar: não vira amostra.
-    const coberto = t0De(e) >= core.num(marco.cadeia_ms) - FOLGA_CADEIA_MS;
-    if (!a.incompleto && coberto) {
-      core.appendJsonl(core.F.agentes, {
-        t: core.agora(), tipo: e.tipo || null, sessao: e.sessao || null,
-        dur_s: Math.round((e.t1_ms - t0De(e)) / 1000),
-        custo5: a.s5, custo7: a.s7,
-        atribuicao: 'tempo', trechos: a.trechos,
-      });
-    }
-    apagar(arq(ACUM, e.id));
-    apagar(e.arquivo);
-  }
+  for (const e of fim) apagar(e.arquivo);
 }
 
 // Desligada (D2): não mede nem lê — mas não pode deixar nada para trás.
 function descartar(ev) {
-  apagar(arq(VOO, ev.agent_id)); apagar(arq(FIM, ev.agent_id)); apagar(arq(ACUM, ev.agent_id));
+  apagar(arq(VOO, ev.agent_id)); apagar(arq(FIM, ev.agent_id));
   if (emVoo().length === 0 && !fechandoAgora()) descartarTudo();
 }
 

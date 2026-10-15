@@ -22,8 +22,10 @@ Ler o percentual é meio do caminho. O que decide é a conta:
 cabe?  =  n × custo_por_agente  <  restante × margem
 ```
 
-O `restante` vem do próprio Claude Code (os números do `/usage`). O **custo por agente** é medido pela própria
-ferramenta, trecho a trecho (D47) — é o coração do projeto.
+O `restante` vem do próprio Claude Code (os números do `/usage`). O **custo
+por agente** é medido pela própria ferramenta — o ritmo de gasto por hora de
+subagente e quanto tempo eles costumam rodar (D47, D48). É o coração do
+projeto.
 
 ## O que é lido
 
@@ -152,16 +154,16 @@ corre, e não viola o D3: se disparou, há trabalho em curso. Fala por
 **D31 — Paralelismo não é sujeira, e o custo é divisão, não atribuição.**
 Com vários subagentes rodando juntos não dá para saber quem gastou o quê, e
 fingir que dá seria pior. O que se mede é quanto a cota subiu com eles em voo,
-dividido entre eles. Paralelismo é o objeto que a ferramenta existe para
+dividido pelas horas deles. Paralelismo é o objeto que a ferramenta existe para
 dimensionar. (A primeira forma disso — a onda inteira como unidade, do
 primeiro subagente ao último — saiu no D47.)
 
-**D32 — Média agrupada.** Soma dos custos ÷ soma dos agentes, não média de
-médias. Do primeiro workflow real, 65% em 63 agentes = 1.03%/agente. Trecho
-curto mede 0% (o percentual é inteiro) e entra assim mesmo — zero ali é
-"abaixo da resolução", não "de graça". Naquele workflow, onda grande saiu mais
-barata por agente (overhead fixo dividido); a média unitária
-superestima as grandes, que é o lado certo de errar.
+**D32 — Média agrupada.** Soma dos Δ ÷ soma das horas de subagente, não média
+dos ritmos de cada trecho: respeita o peso de cada um. Trecho curto mede 0% (o
+percentual é inteiro) e entra assim mesmo — zero ali é "abaixo da resolução",
+não "de graça", e só a soma com os trechos longos diz o ritmo de verdade. (Na
+primeira versão a média era de custo por agente: 65% em 63 agentes =
+1.03%/agente no primeiro workflow real.)
 
 **D33 — Nada de ler-alterar-regravar arquivo compartilhado.** Com a lista de
 participantes num arquivo único, hooks simultâneos se atropelavam: 16 de uma
@@ -355,32 +357,54 @@ do Claude Code na máquina. No primeiro teste real, um agente de outra sessão
 rodou por mais de meia hora e manteve a onda aberta; das 08h04 às 09h47 nada
 foi medido, e os subagentes desta sessão ficaram esperando por ele.
 
-Agora a cota é lida em **marcos**, e o que ela subiu entre dois marcos é
-dividido entre os subagentes que rodaram naquele trecho, **pelo tempo que cada
-um rodou dentro dele**. Quando um subagente termina, a soma das partes dele é
-o custo, e entra na base na hora:
-
-```
-10:00 marco 40%   A e B começam
-10:03 B termina → marco 46%: 6% pelos 3min de A e de B → B custou 3%
-10:05 A termina → marco 48%: 2% só para A               → A custou 3+2 = 5%
-```
+Agora a cota é lida em **marcos**, e cada trecho entre dois marcos é uma
+amostra: o que a cota subiu, e quantas horas de subagente rodaram nele — de
+todas as sessões, por tipo de subagente.
 
 - **Quando há marco novo:** quando um subagente termina e o trecho em curso já
   tem `medidor.trecho_s` (2min), ou quando o céu esvazia. Trecho mais curto
-  fica para o próximo marco — assim a leitura não segura cada subagente que
+  segue aberto — assim a leitura não segura cada subagente que termina.
+- **A conversa principal** de cada sessão também gasta e entra no Δ: infla o
+  ritmo dos subagentes, o lado seguro.
+- **O marco se recupera sozinho:** sem marco, quem começa abre um — mesmo com
+  gente em voo, que entra no trecho com o tempo a partir dali.
+
+**D48 — O ritmo de um subagente, não o custo total.** As janelas são de 5h, e
+um subagente pode rodar 12h: ele gasta um pedaço de uma janela, outro da
+seguinte, outro da terceira. "Custo total em % de uma janela de 5h" — 130% de
+uma janela — não descreve isso. E o trecho que atravessa um reset nem tem Δ:
+o número de antes é da janela velha, o de depois é da nova. Na primeira forma
+dos trechos, todo subagente que rodasse num trecho assim ficava sem amostra, e
+a base ficava só com os curtos, que cabem inteiros numa janela — subestimando
+trabalho longo, o lado perigoso de errar.
+
+O que se mede agora são duas coisas separadas:
+
+- **o ritmo** — quanto da janela um subagente gasta por hora rodando. Sai dos
+  trechos: soma dos Δ ÷ soma das horas de subagente (D32), por tipo. O trecho
+  que atravessa um reset é pulado na janela que virou, e só nela — a semanal
+  continua contando —, e os trechos antes e depois seguem valendo;
+- **a duração típica** — quanto um subagente costuma rodar, do `SubagentStart`
+  ao `SubagentStop`. Não depende de leitura nenhuma, e é gravada quando ele
   termina.
-- **Divisão por tempo, não por cabeça:** quem rodou 90s num trecho leva o
-  triplo de quem rodou 30s. É uma hipótese — que todos gastam no mesmo ritmo —
-  e erra quando um gasta mais por minuto que os outros. Mas a soma das partes é
-  sempre o Δ inteiro.
-- **Agentes de outras sessões** entram na divisão como os daqui. A conversa
-  principal de cada sessão também gasta, e entra na conta: infla o custo, o
-  lado seguro.
-- **A cadeia se recupera sozinha:** sem marco, quem começa abre uma — mesmo
-  com gente em voo. Quem já rodava antes dela tem só parte do custo coberta e
-  não vira amostra (subcontaria, o lado perigoso); mas entra na divisão, para
-  não inflar a parte dos outros.
+
+O `cabe` multiplica os dois, e corta no reset:
+
+```
+custo na janela = n × ritmo × mín(duração típica, tempo até o reset)
+```
+
+O que um subagente gastar depois do reset cai na janela seguinte. Por isso um
+fan-out de agentes longos pode caber nas 5h de agora — e a semanal, que conta
+a duração inteira, vira o limite de verdade; a saída do `cabe` mostra as duas.
+
+A divisão por tempo é uma hipótese — que os subagentes no mesmo trecho gastam
+no mesmo ritmo. Erra quando um Opus pesado roda ao lado de um Haiku leve: os
+dois saem com o mesmo ritmo do trecho. Entre trechos com misturas diferentes,
+os tipos se separam.
+
+A ideia é do dono do projeto, olhando o caso real: "as cotas são de 5h — se um
+agente ficar 12h, ele usa duas de 5 e 2 horas da última".
 
 ## A faxina
 

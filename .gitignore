@@ -22,7 +22,6 @@ agentes.jsonl
 trechos.jsonl
 em-voo/
 terminados/
-acumulado/
 
 # Node
 node_modules/

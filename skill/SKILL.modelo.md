@@ -45,12 +45,16 @@ inteiro, e diga ao usuário que a primeira leva é de calibração.
 
 Quando a saída disser `pode disparar os N de uma vez`, pode.
 
-O custo por subagente vem de **medição coletiva**: o que a cota sobe enquanto
-eles rodam é dividido entre eles, pelo tempo de cada um. É divisão, não
-atribuição — com vários rodando juntos não dá para saber qual gastou o quê. Se
-um tipo de agente for muito mais caro por minuto que os outros, a divisão
-esconde isso. Para trabalho heterogêneo pesado, prefira ondas do mesmo tipo de
-agente.
+A estimativa vem de **medição coletiva**: o ritmo de gasto por hora de
+subagente e quanto tempo eles costumam rodar. É divisão, não atribuição — com
+vários rodando juntos não dá para saber qual gastou o quê. Se um tipo de agente
+for muito mais caro por minuto que os outros, a divisão esconde isso. Para
+trabalho heterogêneo pesado, prefira ondas do mesmo tipo de agente.
+
+**Trabalho longo (horas) atravessa a janela de 5h.** O `cabe` conta, nela, só
+o tempo até o reset — o resto cai nas janelas seguintes — e mostra também a
+**semanal**, que paga a duração inteira. Para agentes longos, é a semanal que
+decide: diga ao usuário quanto dela a operação vai consumir.
 
 ## Você será avisado durante o trabalho
 

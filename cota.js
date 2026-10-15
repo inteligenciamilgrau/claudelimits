@@ -44,13 +44,13 @@ function ctx(sondar) {
   const nowS = core.agora();
   const hist = core.lerHistorico();
   const janelas = est ? core.lerJanelas(est, cfg, nowS, hist) : null;
-  const custos = an.custoPorTipo(core.lerJsonl(core.F.agentes));
-  return { cfg, est, nowS, hist, janelas, custos };
+  const base = an.base(core.lerJsonl(core.F.trechos), core.lerJsonl(core.F.agentes));
+  return { cfg, est, nowS, hist, janelas, base };
 }
 
 // Saída para script: tudo que o leitor sabe, sem cor e sem prosa.
 function relatorioJson() {
-  const { cfg, est, nowS, hist, janelas, custos } = ctx();
+  const { cfg, est, nowS, hist, janelas, base } = ctx();
   if (!est) return { ligado: cfg.ligado, estado: null, motivo: 'sem leitura gravada' };
   const r5 = an.ritmo(hist, 'pct5', 'reset5', est.reset5, est);
   const r7 = an.ritmo(hist, 'pct7', 'reset7', est.reset7, est);
@@ -63,7 +63,8 @@ function relatorioJson() {
     sete_dias: Object.assign({}, janelas.sete,
       { ritmo_pct_hora: r7.pctPorHora, ritmo_medido_h: r7.deltaHoras }),
     semanal_por_modelo: est.modelos || [],
-    custo_por_agente: custos,
+    ritmo_por_agente: base.ritmo,
+    duracao_por_agente: base.duracao,
   };
 }
 
@@ -99,7 +100,7 @@ function linhaJanela(rotulo, jan, hist, est, chavePct, chaveReset, semanal) {
 
 function cmdStatus(json) {
   if (json) { const r = relatorioJson(); say(JSON.stringify(r, null, 2)); return r.estado === null ? 1 : 0; }
-  const { cfg, est, nowS, hist, janelas, custos } = ctx();
+  const { cfg, est, nowS, hist, janelas, base } = ctx();
 
   if (!cfg.ligado) {
     say('');
@@ -128,14 +129,20 @@ function cmdStatus(json) {
   say((diag.caso === 'ok' ? C.d : C.y) + `  leitura de ${core.fmtDuracao(nowS - est.t)} atrás` +
       C.d + (est.plano ? '  ·  plano ' + est.plano : '') + C.r);
 
-  const tipos = Object.entries(custos).filter(([k]) => k !== '__geral');
-  if (custos.__geral) {
-    const t = tipos.map(([k, v]) => `${k} ${v.media5.toFixed(2)}%${C.d}(n=${v.n})${C.r}`).join(' · ');
-    say(C.d + '  custo por subagente: ' + C.r +
-        `geral ${custos.__geral.media5.toFixed(2)}%${C.d}(n=${custos.__geral.n})${C.r}` +
-        (t ? C.d + '  ·  ' + C.r + t : ''));
+  // D48 — o ritmo de um subagente (quanto da janela de 5h por hora rodando) e
+  // quanto tempo eles costumam rodar: é disso que sai o `cabe`.
+  const linhaBase = k => {
+    const m = an.medioPara(base, k === '__geral' ? null : k);
+    if (!m || (k !== '__geral' && m.fonte === 'geral')) return null;
+    return `${k === '__geral' ? 'geral' : k} ${m.r5.toFixed(1)}%/h · ${core.fmtDuracao(m.dur_s)}` +
+           `${C.d}(${m.horas.toFixed(1)}h medidas, ${m.agentes} agente(s))${C.r}`;
+  };
+  const geral = linhaBase('__geral');
+  if (geral) {
+    const tipos = Object.keys(base.ritmo).filter(k => k !== '__geral').map(linhaBase).filter(Boolean);
+    say(C.d + '  por subagente: ' + C.r + geral + (tipos.length ? C.d + '  ·  ' + C.r + tipos.join(C.d + ' · ' + C.r) : ''));
   } else {
-    say(C.d + '  custo por subagente: ainda sem amostra' + C.r);
+    say(C.d + '  por subagente: ainda sem medida de ritmo e duração' + C.r);
   }
   // D36 — o número acima não vale se a sonda quebrou. Dizer isso aqui, com o
   // conserto junto, é a diferença entre consertar e achar que não funciona.
@@ -193,11 +200,11 @@ function semDado() {
 /* -------------------------------- cabe -------------------------------- */
 
 function cmdCabe(n, tipo, json) {
-  const { cfg, est, nowS, janelas, custos } = ctx();
+  const { cfg, est, nowS, janelas, base } = ctx();
   if (!cfg.ligado) { say(C.y + 'ferramenta cota desativada' + C.r); return 2; }
   if (!est) { semDado(); return 1; }
 
-  const res = an.admissao({ janelas, custos, cfg, n, tipo, nowS });
+  const res = an.admissao({ janelas, base, cfg, n, tipo, nowS });
   if (json) { say(JSON.stringify(res, null, 2)); return 0; }
 
   const rot = {
@@ -230,8 +237,16 @@ function cmdCabe(n, tipo, json) {
   } else if (res.onda && res.onda.tamanho === n && n > 1) {
     say(C.d + `  pode disparar os ${n} de uma vez` + C.r);
   }
-  if (res.baseAmostras) {
-    say(C.d + `  base: média ${res.baseFonte} de ${res.baseAmostras} amostra(s)` + C.r);
+  // D48 — para agente longo, o reset corta o que cai nesta janela de 5h; o
+  // resto vai para as seguintes, e é a semanal que paga a duração inteira.
+  const j7 = res.janelas.sete;
+  if (j7 && j7.custoTotal !== null && res.janelaCritica !== '7d') {
+    say(C.d + `  semanal: ${j7.custoTotal.toFixed(1)}% de um orçamento de ${j7.orcamento.toFixed(1)}%` + C.r);
+  }
+  if (res.base) {
+    const b = res.base;
+    say(C.d + `  base: ${b.fonte}, ${b.ritmo5_h.toFixed(1)}%/h por subagente × ${core.fmtDuracao(b.duracao_s)} típicos` +
+        ` (${b.horas.toFixed(1)}h de subagente medidas em ${b.trechos} trecho(s), ${b.agentes} duração(ões))` + C.r);
   }
   say('');
   return res.veredito === 'nao_cabe' ? 1 : 0;
@@ -282,7 +297,7 @@ function cmdSondar(json) {
  */
 function cmdAudit(json) {
   const r = sonda.sondar({});
-  const { cfg, est, nowS, hist, custos, janelas } = ctx(false);
+  const { cfg, est, nowS, hist, base, janelas } = ctx(false);
   const achados = [];
   const add = (ok, titulo, detalhe) => achados.push({ ok, titulo, detalhe });
 
@@ -316,9 +331,10 @@ function cmdAudit(json) {
   }
 
   // Informativo: instalação nova não tem amostra, e isso não é falha.
-  const n = custos.__geral ? custos.__geral.n : 0;
-  add(true, 'amostras de custo por subagente', n
-    ? `${n} amostra(s)` : 'nenhuma ainda — a primeira onda do `cabe` é de calibração');
+  const g = an.medioPara(base, null);
+  add(true, 'medida de ritmo e duração por subagente', g
+    ? `${g.r5.toFixed(1)}%/h, ${core.fmtDuracao(g.dur_s)} típicos — ${g.horas.toFixed(1)}h em ${g.trechos} trecho(s)`
+    : 'nenhuma ainda — a primeira onda do `cabe` é de calibração');
 
   if (json) { say(JSON.stringify({ achados, sonda: r }, null, 2)); return 0; }
 

@@ -148,37 +148,55 @@ ok(!/estouraAntesDoReset/.test(fs.readFileSync(path.join(__dirname, 'cota.js'), 
    'cota.js não fala em estouro previsto');
 
 /* ------------------------------ admissão ------------------------------ */
-secao('admissão — a conta da missão (D15/D16)');
+secao('admissão — a conta da missão (D15/D16, D48)');
 
+// Uma base pronta: ritmo (%/h por subagente) e duração típica.
+const baseCom = (r5, r7, durS, tipo) => ({
+  ritmo: { [tipo || '__geral']: { r5, r7, h5: 10, h7: 10, trechos: 5 },
+           __geral: { r5, r7, h5: 10, h7: 10, trechos: 5 } },
+  duracao: { [tipo || '__geral']: { n: 8, media_s: durS }, __geral: { n: 8, media_s: durS } },
+});
 const janelas = { cinco: j(60, NOW + 3 * 3600, 10), sete: j(35, NOW + 4 * 86400, 10) };
-const custos = an.custoPorTipo([
-  { tipo: 'Explore', custo5: 2, custo7: 0.2 },
-  { tipo: 'Explore', custo5: 2, custo7: 0.2 },
-]);
+// 2%/h por subagente, 1h típica: 2% de cada janela por subagente.
+const base2 = baseCom(2, 0.2, 3600, 'Explore');
 // restante 5h = 40%, orçamento = 40 × 0.7 = 28%. Cada agente custa 2%.
-const a5 = an.admissao({ janelas, custos, cfg, n: 5, tipo: 'Explore', nowS: NOW });
+const a5 = an.admissao({ janelas, base: base2, cfg, n: 5, tipo: 'Explore', nowS: NOW });
 ok(a5.veredito === 'vai' && a5.quantosCabem === 14, '5 × 2% de 28% → vai, e cabem 14');
-const a20 = an.admissao({ janelas, custos, cfg, n: 20, tipo: 'Explore', nowS: NOW });
+const a20 = an.admissao({ janelas, base: base2, cfg, n: 20, tipo: 'Explore', nowS: NOW });
 ok(a20.veredito === 'nao_cabe', '20 agentes = 40% → não cabe');
 ok(a20.esperarAte === NOW + 3 * 3600, 'sugere esperar o reset da 5h (D16)');
 
 const semanalRuim = { cinco: j(10, NOW + 3 * 3600, 10), sete: j(95, NOW + 4 * 86400, 10) };
-const aSem = an.admissao({ janelas: semanalRuim, custos, cfg, n: 20, tipo: 'Explore', nowS: NOW });
+const aSem = an.admissao({ janelas: semanalRuim, base: base2, cfg, n: 20, tipo: 'Explore', nowS: NOW });
 ok(aSem.janelaCritica === '7d' && aSem.veredito === 'nao_cabe', 'obedece a janela mais apertada (D15)');
 ok(aSem.esperarAte === null, 'e não sugere esperar a 5h quando quem barra é a semanal');
-ok(an.admissao({ janelas, custos: {}, cfg, n: 5, nowS: NOW }).veredito === 'sem_base',
-   'sem amostra → SEM BASE, não recusa');
+ok(an.admissao({ janelas, base: { ritmo: {}, duracao: {} }, cfg, n: 5, nowS: NOW }).veredito === 'sem_base',
+   'sem medida → SEM BASE, não recusa');
 const expirada = { cinco: j(99, NOW - 10, 90000), sete: j(99, NOW - 10, 90000) };
-ok(an.admissao({ janelas: expirada, custos, cfg, n: 5, nowS: NOW }).veredito === 'sem_dado',
+ok(an.admissao({ janelas: expirada, base: base2, cfg, n: 5, nowS: NOW }).veredito === 'sem_dado',
    'janela expirada não vira decisão baseada em 99% velho');
+
+// D48 — o reset corta o que cai na janela de 5h; a semanal paga a duração inteira.
+// 10%/h na 5h, 1%/h na semanal, agentes de 12h, a 5h reseta em 2h.
+const longos = baseCom(10, 1, 12 * 3600);
+const jLongo = { cinco: j(20, NOW + 2 * 3600, 10), sete: j(80, NOW + 5 * 86400, 10) };
+const aL = an.admissao({ janelas: jLongo, base: longos, cfg, n: 3, nowS: NOW });
+ok(Math.abs(aL.janelas.cinco.custoUnit - 20) < 0.01,
+   'agente de 12h nesta janela de 5h: só as 2h até o reset contam (10%/h × 2h = 20%)');
+ok(Math.abs(aL.janelas.sete.custoUnit - 12) < 0.01, 'na semanal, as 12h inteiras (1%/h × 12h = 12%)');
+ok(aL.janelaCritica === '7d', 'e para trabalho longo quem manda é a semanal');
+const semReset = { cinco: j(0, null, 10), sete: j(30, NOW + 5 * 86400, 10) };
+ok(Math.abs(an.admissao({ janelas: semReset, base: base2, cfg, n: 1, nowS: NOW }).janelas.cinco.custoUnit - 2) < 0.01,
+   'janela de 5h ainda não iniciada (sem reset): conta a duração inteira');
 
 /* -------------------------------- ondas -------------------------------- */
 secao('onda em vez de salva (D29)');
 
-const custosOnda = { __geral: { n: 5, media5: 1.2, media7: 0.1 } };
+// 1.2%/h × 1h = 1.2% por subagente na 5h; 0.1% na semanal.
+const baseOnda = baseCom(1.2, 0.1, 3600);
 const admOnda = (pct, n) => an.admissao({
   janelas: { cinco: j(pct, NOW + 3 * 3600, 10), sete: j(5, NOW + 5 * 86400, 10) },
-  custos: custosOnda, cfg: { admissao: { margem: 0.7 } }, n, nowS: NOW });
+  base: baseOnda, cfg: { admissao: { margem: 0.7 } }, n, nowS: NOW });
 
 const folga = admOnda(20, 10);
 ok(folga.onda.tamanho === 10 && folga.onda.restantes === 0, 'com folga, a onda é o pedido inteiro');
@@ -190,27 +208,40 @@ ok(admOnda(85, 10).veredito === 'nao_cabe' && admOnda(85, 10).onda === null,
    'reprovado não ganha onda de consolação');
 const cega = an.admissao({
   janelas: { cinco: j(20, NOW + 3 * 3600, 10), sete: j(5, NOW + 5 * 86400, 10) },
-  custos: {}, cfg: { admissao: { margem: 0.7 } }, n: 10, nowS: NOW });
+  base: { ritmo: {}, duracao: {} }, cfg: { admissao: { margem: 0.7 } }, n: 10, nowS: NOW });
 ok(cega.onda && cega.onda.tamanho === 2 && /medir/.test(cega.onda.porque || ''),
    'sem base, uma onda pequena cujo propósito é medir');
 
-/* ------------------------- base de custo (D32) ------------------------- */
-secao('base de custo — média agrupada (D32)');
+/* ------------------------- ritmo e duração (D48) ------------------------- */
+secao('o ritmo sai dos trechos, a duração dos subagentes (D48, D32)');
 
-// Onda A: n=2, Δ=10 → 5 cada.  Onda B: n=8, Δ=8 → 1 cada.
-// Média de médias daria 3; agrupada dá 18/10 = 1.8.
-const agrupada = an.custoPorTipo([].concat(
-  Array.from({ length: 2 }, () => ({ tipo: 'X', custo5: 5, custo7: 0 })),
-  Array.from({ length: 8 }, () => ({ tipo: 'X', custo5: 1, custo7: 0 }))));
-ok(Math.abs(agrupada.__geral.media5 - 1.8) < 0.001, 'média agrupada (1.8), não média de médias (3)');
-// Onda curta mede 0% e entra assim mesmo: zero é "abaixo da resolução".
-const comZero = an.custoPorTipo([{ custo5: 0 }, { custo5: 0 }, { custo5: 3 }, { custo5: 3 }]);
-ok(Math.abs(comZero.__geral.media5 - 1.5) < 0.001, 'onda que mediu 0% entra na média, não some');
+const trecho = (d5, seg, porTipo, extra) => Object.assign(
+  { d5, d7: d5 / 10, valido5: true, valido7: true, seg, por_tipo: porTipo || { X: seg } }, extra || {});
+// Agrupado: soma dos Δ ÷ soma das horas, não média dos ritmos dos trechos.
+// Trecho A: 6% em 1h de subagente. Trecho B: 2% em 3h. Média dos ritmos: 3.33.
+const rA = an.ritmoPorTipo([trecho(6, 3600), trecho(2, 3 * 3600)]);
+ok(Math.abs(rA.__geral.r5 - 2) < 0.001, 'ritmo agrupado: 8% em 4h = 2%/h, não a média dos trechos (3.33)');
+// Trecho curto mede 0% e entra assim mesmo: zero é "abaixo da resolução".
+const rZ = an.ritmoPorTipo([trecho(0, 600), trecho(0, 600), trecho(3, 1800)]);
+ok(Math.abs(rZ.__geral.r5 - 3.6) < 0.001, 'trecho que mediu 0% entra na conta, não some (3% em 50min = 3.6%/h)');
+// O trecho que atravessa o reset da 5h é pulado na 5h — e só nela.
+const rR = an.ritmoPorTipo([trecho(4, 3600), trecho(null, 3600, null, { valido5: false, d7: 0.5 })]);
+ok(Math.abs(rR.__geral.r5 - 4) < 0.001 && Math.abs(rR.__geral.h5 - 1) < 0.001,
+   'trecho que atravessou o reset da 5h fica fora do ritmo da 5h');
+ok(Math.abs(rR.__geral.h7 - 2) < 0.001, 'mas conta para a semanal, que não virou');
+// Por tipo: o Δ de um trecho misto é dividido pelo tempo de cada tipo.
+const rT = an.ritmoPorTipo([trecho(4, 4 * 3600, { Explore: 3600, Plan: 3 * 3600 }), trecho(6, 3600, { Explore: 3600 })]);
+ok(Math.abs(rT.Explore.r5 - 3.5) < 0.001 && Math.abs(rT.Plan.r5 - 1) < 0.001,
+   'por tipo: cada um com o seu tempo nos trechos em que rodou');
+const dur = an.duracaoPorTipo([{ tipo: 'X', dur_s: 60 }, { tipo: 'X', dur_s: 180 }, { tipo: 'Y', dur_s: 600 }]);
+ok(dur.X.n === 2 && dur.X.media_s === 120 && dur.__geral.n === 3, 'a duração típica sai dos subagentes que terminaram');
+ok(an.medioPara({ ritmo: rT, duracao: { __geral: { n: 3, media_s: 300 } } }, 'Explore').fonte === 'geral',
+   'tipo sem duração medida cai no geral, em vez de inventar');
 const tudoZero = an.admissao({
   janelas: { cinco: j(50, NOW + 3 * 3600, 10), sete: j(5, NOW + 5 * 86400, 10) },
-  custos: an.custoPorTipo([{ tipo: 'X', custo5: 0, custo7: 0 }]),
+  base: { ritmo: an.ritmoPorTipo([trecho(0, 600)]), duracao: { __geral: { n: 2, media_s: 300 } } },
   cfg: { admissao: { margem: 0.7 } }, n: 5, nowS: NOW });
-ok(/curtas demais|inteiro/.test(tudoZero.motivo || ''),
+ok(tudoZero.veredito === 'sem_base' && /curtos demais|inteiro/.test(tudoZero.motivo || ''),
    'tudo zero é explicado pela resolução do percentual, não pela janela');
 
 /* -------------------------- sonda: interpretar -------------------------- */
@@ -405,93 +436,112 @@ ok(lerEm(TMPX)('sonda.json').versao === '2.1.300', 'e a versão do Claude Code s
 ok(/mudou de extensão 2\.1\.299/.test(trocou), 'e o `cota sondar` diz em voz alta que o claude mudou');
 
 /* ------------------------------- medidor ------------------------------- */
-secao('medidor: o custo medido em trechos, pelo tempo de cada subagente (D47)');
+secao('medidor: trechos de ritmo e duração de cada subagente (D47, D48)');
 
 const TMPM = novaPasta('medidor');
 const ENVM = { CLAUDE_COTA_DIR: TMPM, COTA_FALSO: 'ok' };
 const lerLM = lerLEm(TMPM);
-const ev = (tipo, id) => ({ hook_event_name: tipo, agent_id: id, agent_type: 'Explore', session_id: 's' });
-const med = (tipo, id, extra) => hook('medidor.js', ev(tipo, id), Object.assign({}, ENVM, extra || {}));
-// Reescreve os inícios para o passado, para o tempo de cada um ser conhecido.
+const ev = (tipo, id, agente) => ({ hook_event_name: tipo, agent_id: id, agent_type: agente || 'Explore', session_id: 's' });
+const med = (tipo, id, extra, agente) => hook('medidor.js', ev(tipo, id, agente), Object.assign({}, ENVM, extra || {}));
+// Reescreve os inícios (e o marco) para o passado, para o tempo de cada um ser conhecido.
 const recuar = (dir, ids, s) => {
   for (const id of ids) {
     const p = path.join(dir, 'em-voo', id + '.json');
     fs.writeFileSync(p, JSON.stringify(Object.assign(core.lerJson(p, {}), { t0_ms: Date.now() - s * 1000 })));
   }
   const pm = path.join(dir, 'marco.json');
-  fs.writeFileSync(pm, JSON.stringify(Object.assign(core.lerJson(pm, {}),
-    { t_ms: Date.now() - s * 1000, cadeia_ms: Date.now() - s * 1000 })));
+  if (fs.existsSync(pm)) fs.writeFileSync(pm, JSON.stringify(Object.assign(core.lerJson(pm, {}), { t_ms: Date.now() - s * 1000 })));
 };
-const amostras = () => lerLM('agentes.jsonl');
-const perto = (a, b) => Math.abs(a - b) < 0.15;
+const trechosM = () => lerLM('trechos.jsonl');
+const duracoes = () => lerLM('agentes.jsonl');
+const perto = (a, b, tol) => Math.abs(a - b) < (tol || 3);
 
-// Um sozinho: o trecho vai do início ao fim dele.
+// Um sozinho, 60s: um trecho, e a duração dele.
 med('SubagentStart', 'a1', { COTA_FALSO_P5: '20' });
-ok(lerEm(TMPM)('marco.json').pct5 === 20, 'o primeiro SubagentStart lê a cota e abre a cadeia com um marco');
+ok(lerEm(TMPM)('marco.json').pct5 === 20, 'o primeiro SubagentStart lê a cota e abre o marco');
+recuar(TMPM, ['a1'], 60);
 med('SubagentStop', 'a1', { COTA_FALSO_P5: '23' });
-ok(amostras().length === 1 && amostras()[0].custo5 === 3, 'sozinho, ele custa o que a cota subiu (20% → 23%)');
-ok(!fs.existsSync(path.join(TMPM, 'marco.json')), 'e com o céu vazio a cadeia termina');
+const t1 = trechosM().pop();
+ok(t1 && t1.d5 === 3 && t1.valido5 && perto(t1.seg, 60), 'o trecho guarda o que a cota subiu (3%) e o tempo de subagente (60s)');
+ok(perto(t1.por_tipo.Explore, 60), 'separado por tipo de subagente');
+ok(duracoes().length === 1 && perto(duracoes()[0].dur_s, 60), 'e a duração do subagente é gravada quando ele termina');
+ok(!fs.existsSync(path.join(TMPM, 'marco.json')), 'com o céu vazio, não fica marco para trás');
 
-// Dois juntos, o mesmo tempo: o trecho é dividido pela metade.
+// Dois juntos: quem termina antes não fecha trecho curto, mas a duração já sai.
 med('SubagentStart', 'b1', { COTA_FALSO_P5: '23' }); med('SubagentStart', 'b2');
 recuar(TMPM, ['b1', 'b2'], 60);
 med('SubagentStop', 'b2', { COTA_FALSO_P5: '27' });
-ok(amostras().length === 1, 'trecho curto: quem termina não lê a cota, e a parte dele sai no próximo marco');
+ok(trechosM().length === 1 && duracoes().length === 2,
+   'trecho curto com gente rodando não lê a cota — mas a duração de quem terminou já é gravada');
 med('SubagentStop', 'b1', { COTA_FALSO_P5: '31' });
-const ab = amostras().slice(-2);
-ok(ab.length === 2 && perto(ab[0].custo5, 4) && perto(ab[1].custo5, 4),
-   'o último a sair fecha o trecho, e 8% pelos mesmos 60s dão ~4% a cada um');
-ok(ab.every(a => a.atribuicao === 'tempo'), 'marcados como divisão por tempo — não se sabe quem gastou o quê');
+const t2 = trechosM().pop();
+ok(t2.d5 === 8 && perto(t2.seg, 120), 'o último a sair fecha o trecho: 8% em 120s de subagente');
 
-// Tempos diferentes no mesmo trecho: a divisão segue o tempo de cada um.
-med('SubagentStart', 'c1', { COTA_FALSO_P5: '31' }); med('SubagentStart', 'c2');
+// Tipos diferentes no mesmo trecho: cada um com o seu tempo.
+med('SubagentStart', 'c1', { COTA_FALSO_P5: '31' }, 'Explore'); med('SubagentStart', 'c2', {}, 'Plan');
 recuar(TMPM, ['c1'], 90); recuar(TMPM, ['c2'], 30);
 const pm = path.join(TMPM, 'marco.json');
-fs.writeFileSync(pm, JSON.stringify(Object.assign(core.lerJson(pm, {}), { t_ms: Date.now() - 90000, cadeia_ms: Date.now() - 90000 })));
-med('SubagentStop', 'c2', { COTA_FALSO_P5: '39' });
-med('SubagentStop', 'c1', { COTA_FALSO_P5: '39' });
-const porDur = amostras().slice(-2).sort((x, y) => x.dur_s - y.dur_s);
-ok(perto(porDur[0].custo5, 2) && perto(porDur[1].custo5, 6), '90s contra 30s no mesmo trecho: 8% vira ~6% e ~2%');
+fs.writeFileSync(pm, JSON.stringify(Object.assign(core.lerJson(pm, {}), { t_ms: Date.now() - 90000 })));
+med('SubagentStop', 'c2', { COTA_FALSO_P5: '39' }, 'Plan');
+med('SubagentStop', 'c1', { COTA_FALSO_P5: '39' }, 'Explore');
+const t3 = trechosM().pop();
+ok(perto(t3.por_tipo.Explore, 90) && perto(t3.por_tipo.Plan, 30), 'Explore rodou 90s e Plan 30s no trecho');
 
-// A onda parcial: o curto é medido sem esperar o longo terminar.
+// A onda parcial: trecho de mais de 2min fecha quando alguém termina, sem esperar o resto.
 med('SubagentStart', 'longo', { COTA_FALSO_P5: '39' }); med('SubagentStart', 'curto');
 recuar(TMPM, ['longo', 'curto'], 200);
+const nT = trechosM().length;
 med('SubagentStop', 'curto', { COTA_FALSO_P5: '43' });
-const curto = amostras().pop();
-ok(curto.tipo === 'Explore' && perto(curto.custo5, 2) && fs.existsSync(path.join(TMPM, 'em-voo', 'longo.json')),
-   'trecho de mais de 2min: quem termina fecha o trecho e é medido na hora (~2%), com o outro ainda rodando');
-ok(core.lerJson(path.join(TMPM, 'acumulado', 'longo.json'), {}).s5 > 1.9,
-   'e a parte do que continua rodando fica guardada');
+ok(trechosM().length === nT + 1 && perto(trechosM().pop().seg, 400) && fs.existsSync(path.join(TMPM, 'em-voo', 'longo.json')),
+   'trecho de mais de 2min fecha quando alguém termina, com o outro ainda rodando');
+ok(fs.existsSync(path.join(TMPM, 'marco.json')), 'e abre o trecho seguinte para quem continua');
 med('SubagentStop', 'longo', { COTA_FALSO_P5: '45' });
-ok(perto(amostras().pop().custo5, 4), 'quando ele termina, o custo é a soma das partes (2% + 2%)');
 
-// Sem leitura nova no fechamento: nada de custo zero inventado.
+// Sem leitura nova no fechamento: nenhum trecho inventado (#13).
 med('SubagentStart', 'd1', { COTA_FALSO_P5: '45' });
-const antesD = amostras().length;
+const nD = trechosM().length;
 med('SubagentStop', 'd1', { COTA_FALSO: 'falha' });
-ok(amostras().length === antesD, 'a leitura do fechamento falhou: nenhuma amostra é gravada');
+ok(trechosM().length === nD, 'a leitura do fechamento falhou: nenhum trecho é gravado');
 ok(!fs.existsSync(path.join(TMPM, 'marco.json')) && listarEm(TMPM, 'terminados').length === 0,
-   'e com o céu vazio nada fica para trás (#13)');
+   'e com o céu vazio nada fica para trás');
+ok(duracoes().some(d => d.dur_s !== undefined) && duracoes().length >= 8, 'mas a duração dele foi gravada mesmo assim');
 cli(['sondar'], Object.assign({}, ENVM, { COTA_FALSO_P5: '45' }));   // tira a pausa de falha (#1)
 
-// A janela virou no meio: o Δ é reset, não custo.
+// D48 — o trecho que atravessa o reset da 5h fica fora da 5h, e só dela.
 med('SubagentStart', 'e1', { COTA_FALSO_P5: '45' });
+recuar(TMPM, ['e1'], 60);
 med('SubagentStop', 'e1', { COTA_FALSO_P5: '2', COTA_FALSO_R5: '5' });
-ok(amostras().length === antesD, 'janela que virou no meio do trecho não vira amostra');
+const tR = trechosM().pop();
+ok(tR.valido5 === false && tR.d5 === null, 'trecho que atravessou o reset da 5h não tem Δ na 5h');
+ok(tR.valido7 === true && tR.d7 === 0, 'mas vale para a semanal, que não virou');
 
-// A cadeia perdida (achado real): alguém já rodava sem marco nenhum.
+// D48 — um subagente longo atravessa o reset e continua medido depois dele.
+med('SubagentStart', 'L', { COTA_FALSO_P5: '2', COTA_FALSO_R5: '5' });
+recuar(TMPM, ['L'], 3 * 3600);
+med('SubagentStart', 'h1', { COTA_FALSO_R5: '5' }); recuar(TMPM, ['h1'], 3 * 3600);
+med('SubagentStop', 'h1', { COTA_FALSO_P5: '30', COTA_FALSO_R5: '5' });      // trecho válido: 2 → 30
+med('SubagentStart', 'h2', { COTA_FALSO_R5: '5' }); recuar(TMPM, ['h2'], 2 * 3600);
+med('SubagentStop', 'h2', { COTA_FALSO_P5: '3', COTA_FALSO_R5: '9' });       // a 5h virou: 30 → 3
+recuar(TMPM, [], 3600);
+med('SubagentStop', 'L', { COTA_FALSO_P5: '9', COTA_FALSO_R5: '9' });        // depois do reset: 3 → 9
+const ultimos = trechosM().slice(-3);
+ok(ultimos.map(t => t.valido5).join() === 'true,false,true',
+   'o trecho do reset é pulado, e os de antes e depois continuam valendo');
+ok(ultimos[2].d5 === 6 && ultimos[2].por_tipo.Explore > 3000,
+   'o subagente longo segue medido na janela nova, como qualquer outro');
+ok(perto(duracoes().pop().dur_s, 3 * 3600, 30), 'e a duração dele (3h+) entra na base inteira');
+
+// Marco perdido (achado real): alguém já rodava sem marco nenhum.
 fs.writeFileSync(path.join(TMPM, 'em-voo', 'antigo.json'),
   JSON.stringify({ tipo: 'Explore', sessao: 'outra', t0_ms: Date.now() - 600000 }));
-med('SubagentStart', 'novo', { COTA_FALSO_P5: '5', COTA_FALSO_R5: '5' });
-ok(fs.existsSync(path.join(TMPM, 'marco.json')), 'sem marco, mesmo com gente em voo, quem começa abre uma cadeia nova');
+med('SubagentStart', 'novo', { COTA_FALSO_P5: '9', COTA_FALSO_R5: '9' });
+ok(fs.existsSync(path.join(TMPM, 'marco.json')), 'sem marco, mesmo com gente em voo, quem começa abre um');
 recuar(TMPM, ['novo'], 30);
-const pmN = core.lerJson(path.join(TMPM, 'marco.json'), {});
-fs.writeFileSync(path.join(TMPM, 'marco.json'), JSON.stringify(Object.assign(pmN, { cadeia_ms: Date.now() - 30000 })));
-med('SubagentStop', 'novo', { COTA_FALSO_P5: '7', COTA_FALSO_R5: '5' });
-med('SubagentStop', 'antigo', { COTA_FALSO_P5: '9', COTA_FALSO_R5: '5' });
-const tipos = amostras().slice(antesD).map(a => a.sessao);
-ok(tipos.length === 1 && tipos[0] === 's',
-   'quem começou antes da cadeia não vira amostra (custo subcontado); quem começou depois, sim');
+med('SubagentStop', 'novo', { COTA_FALSO_P5: '11', COTA_FALSO_R5: '9' });
+med('SubagentStop', 'antigo', { COTA_FALSO_P5: '11', COTA_FALSO_R5: '9' });
+const tP = trechosM().pop();
+ok(perto(tP.seg, 60) && tP.agentes === 2, 'quem já rodava entra no trecho com o tempo a partir do marco');
+ok(perto(duracoes().pop().dur_s, 600, 5), 'e a duração dele (10min) entra inteira — o início é do hook, não do marco');
 
 /*
  * D25 — órfão é quem perdeu a sessão, não quem passou da hora. Agente de 12h
@@ -513,46 +563,40 @@ emVooM('longo12h', 'sessao-viva', 12 * HORA);
 emVooM('recente-morto', 'sessao-morta', 5 * 60000);
 emVooM('sem-registro', 'sessao-desconhecida', 3 * HORA);
 emVooM('antiquissimo', 'sessao-desconhecida', 49 * HORA);
-med('SubagentStart', 'f1');
+med('SubagentStart', 'f1', { COTA_FALSO_R5: '9' });
 ok(voando('longo12h'), 'agente de 12h com a sessão viva continua em voo');
 ok(!voando('recente-morto'), 'agente de 5min cuja sessão morreu sai na hora');
 ok(voando('sem-registro'), 'sem registro da sessão, 3h não basta para chamar de órfão');
 ok(!voando('antiquissimo'), 'sem registro, passadas 48h, sai — o último recurso');
 
-// SessionEnd: a sessão fechou, os subagentes dela foram junto.
 emVooM('da-que-fecha', 'sessao-que-fecha', 60000);
 hook('medidor.js', { hook_event_name: 'SessionEnd', session_id: 'sessao-que-fecha', reason: 'other' }, ENVM);
 ok(!voando('da-que-fecha'), 'SessionEnd tira os subagentes da sessão que fechou');
 ok(voando('longo12h') && voando('f1'), 'e só os dela');
 
-// Quando a saída de um órfão esvazia o céu, quem já terminou ainda recebe.
+// Quando a saída de um órfão esvazia o céu, o tempo de quem já terminou ainda vale.
 for (const id of ['longo12h', 'sem-registro']) fs.unlinkSync(path.join(TMPM, 'em-voo', id + '.json'));
-recuar(TMPM, ['f1'], 60);
-med('SubagentStart', 'h1'); recuar(TMPM, ['f1', 'h1'], 60);
-med('SubagentStop', 'h1', { COTA_FALSO_P5: '9', COTA_FALSO_R5: '5' });
-const nAntesSE = amostras().length;
+med('SubagentStart', 'h3', { COTA_FALSO_R5: '9' }); recuar(TMPM, ['f1', 'h3'], 60);
+med('SubagentStop', 'h3', { COTA_FALSO_P5: '11', COTA_FALSO_R5: '9' });
+const nAntesSE = trechosM().length;
 const vooF1 = path.join(TMPM, 'em-voo', 'f1.json');
 fs.writeFileSync(vooF1, JSON.stringify(Object.assign(core.lerJson(vooF1, {}), { sessao: 'sessao-que-fecha' })));
 hook('medidor.js', { hook_event_name: 'SessionEnd', session_id: 'sessao-que-fecha', reason: 'other' },
-     Object.assign({}, ENVM, { COTA_FALSO_P5: '11', COTA_FALSO_R5: '5' }));
-ok(amostras().length === nAntesSE + 1 && amostras().pop().custo5 > 0,
-   'o órfão sai e o céu esvazia: quem já tinha terminado recebe a parte dele, não é descartado');
+     Object.assign({}, ENVM, { COTA_FALSO_P5: '13', COTA_FALSO_R5: '9' }));
+ok(trechosM().length === nAntesSE + 1 && trechosM().pop().seg > 0,
+   'o órfão sai e o céu esvazia: o trecho fecha com o tempo de quem já tinha terminado');
 
 // Desligada (D2): não mede, não lê, e não deixa nada para trás.
 fs.writeFileSync(path.join(TMPM, 'config.json'), JSON.stringify({ ligado: false }));
-const nDesl = amostras().length;
+const nDesl = trechosM().length, dDesl = duracoes().length;
 med('SubagentStart', 'g1'); med('SubagentStop', 'g1');
-ok(amostras().length === nDesl && !fs.existsSync(path.join(TMPM, 'marco.json')) &&
+ok(trechosM().length === nDesl && duracoes().length === dDesl && !fs.existsSync(path.join(TMPM, 'marco.json')) &&
    listarEm(TMPM, 'em-voo').length === 0, 'desligada, não mede e não deixa nada para trás');
 fs.writeFileSync(path.join(TMPM, 'config.json'), JSON.stringify({ ligado: true }));
 
 /* --------------------- concorrência (D33) --------------------- */
 secao('N hooks ao mesmo tempo (D33)');
 
-/*
- * Medido na primeira versão: com a lista de participantes num arquivo único,
- * 16 hooks simultâneos perdiam 9. Cada um grava só os próprios arquivos.
- */
 const TMPC = novaPasta('corrida');
 const ENVC = { CLAUDE_COTA_DIR: TMPC, COTA_FALSO: 'ok' };
 cli(['sondar'], Object.assign({}, ENVC, { COTA_FALSO_P5: '10' }));
@@ -578,10 +622,10 @@ ok(fs.existsSync(path.join(TMPC, 'marco.json')), 'com um marco só para todos');
 ok(fs.readdirSync(TMPC).filter(n => n.endsWith('.tmp')).length === 0, 'e nenhum .tmp órfão ficou');
 recuar(TMPC, ids, 60);
 for (const id of ids) hook('medidor.js', ev('SubagentStop', id), Object.assign({}, ENVC, { COTA_FALSO_P5: '22' }));
-const amC = lerLEm(TMPC)('agentes.jsonl');
-ok(amC.length === N && Math.abs(amC.reduce((s, a) => s + a.custo5, 0) - 12) < 0.001,
-   `os ${N} viraram amostra, e as partes somam o Δ inteiro (10% → 22%)`);
-ok(amC.every(a => Math.abs(a.custo5 - 1) < 0.1), 'cerca de 1% por subagente, pelos mesmos 60s');
+const tC = lerLEm(TMPC)('trechos.jsonl');
+ok(lerLEm(TMPC)('agentes.jsonl').length === N, `as ${N} durações foram gravadas`);
+ok(tC.length === 1 && tC[0].d5 === 12 && perto(tC[0].seg, N * 60, 10),
+   `um trecho só: 12% em ${N} × 60s de subagente`);
 
 const tmpVelho = path.join(TMPC, 'estado.json.9999.tmp');
 const tmpNovo = path.join(TMPC, 'estado.json.8888.tmp');
@@ -900,7 +944,7 @@ fs.unlinkSync(ARGSB);
 cli([], ENVB);
 ok(fs.existsSync(ARGSB), 'passada a pausa, volta a tentar');
 
-// #2 — quem começa enquanto um trecho fecha entra na cadeia seguinte, não no trecho.
+// #2 — quem começa enquanto um trecho fecha entra no trecho seguinte, não nele.
 const TMPR = novaPasta('corrida-fecha');
 const ENVR = { CLAUDE_COTA_DIR: TMPR, COTA_FALSO: 'ok' };
 cli(['sondar'], Object.assign({}, ENVR, { COTA_FALSO_P5: '10' }));
@@ -922,13 +966,13 @@ fs.writeFileSync(CORRIDA, [
 execFileSync(process.execPath, [CORRIDA, path.join(__dirname, 'hooks', 'medidor.js'),
   JSON.stringify(Object.assign({}, ENV, ENVR, { COTA_FALSO_P5: '14', COTA_FALSO_DORME: '2500' })),
   JSON.stringify(Object.assign({}, ENV, ENVR, { COTA_FALSO_P5: '14' }))], { timeout: 60000 });
-const aR = lerLEm(TMPR)('agentes.jsonl');
-ok(aR.length === 1 && perto(aR[0].custo5, 4),
-   'quem começa enquanto o trecho fecha não leva parte dele: r1 fica com os 4% (#2)');
+const tR1 = lerLEm(TMPR)('trechos.jsonl');
+ok(tR1.length === 1 && tR1[0].d5 === 4 && tR1[0].agentes === 1,
+   'quem começa enquanto o trecho fecha não entra nele: o trecho tem só r1, com os 4% (#2)');
 ok(lerEm(TMPR)('marco.json') !== null, 'e quem fechou grava o marco seguinte, para o que acabou de chegar');
 hook('medidor.js', ev('SubagentStop', 'r2'), Object.assign({}, ENVR, { COTA_FALSO_P5: '16' }));
-const aR2 = lerLEm(TMPR)('agentes.jsonl');
-ok(aR2.length === 2 && perto(aR2[1].custo5, 2), 'que depois é medido normalmente (14% → 16%)');
+const tR2 = lerLEm(TMPR)('trechos.jsonl');
+ok(tR2.length === 2 && tR2[1].d5 === 2 && tR2[1].agentes === 1, 'e r2 fica no trecho seguinte (14% → 16%)');
 
 // #13 — fechamento sem estado legível não deixa nada para trás.
 const TMPQ = novaPasta('fecha-sem-estado');
