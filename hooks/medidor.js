@@ -82,19 +82,60 @@ function descartarTudo() {
 }
 
 /*
- * D25 — varrer órfãos antes de qualquer coisa. Se a sessão morre com um
- * subagente rodando, o `SubagentStop` dele nunca dispara. Passadas 2h, o
- * registro sai — e a parte que ele acumulou se perde junto: não há como saber
- * o que era dele.
+ * D25 — a sessão desse subagente ainda está viva? Pelo registro que o próprio
+ * Claude Code mantém, um `~/.claude/sessions/<pid>.json` por sessão aberta,
+ * com o `sessionId` (não documentado):
+ *
+ *   true   registrada, e o processo dela existe
+ *   false  registrada, mas o processo sumiu — fechou sem avisar
+ *   null   o registro não diz (não está lá, ou o formato mudou)
  */
-function limparOrfaos(maxS) {
+function sessaoViva(sessionId) {
+  if (!sessionId) return null;
+  let nomes = [];
+  try { nomes = fs.readdirSync(core.F.sessoesClaude).filter(n => /^\d+\.json$/.test(n)); }
+  catch (_) { return null; }
+  for (const n of nomes) {
+    const s = core.lerJson(path.join(core.F.sessoesClaude, n), null);
+    if (!s || s.sessionId !== sessionId || core.num(s.pid) === null) continue;
+    try { process.kill(s.pid, 0); return true; }
+    catch (e) { return e.code === 'EPERM'; }   // EPERM: existe, só não é nosso
+  }
+  return null;
+}
+
+/*
+ * D25 — órfão é o subagente cuja sessão morreu: o `SubagentStop` dele nunca
+ * vai disparar, e ele ficaria "em voo" para sempre, levando parte de cada
+ * trecho. Antes era quem passasse de 2h — mas agente de 12h trabalhando existe,
+ * e era descartado vivo. Agora sai quando:
+ *
+ *   - a sessão dele terminou (`encerrada`, do hook SessionEnd), ou
+ *   - o registro de sessões mostra o processo dela morto, ou
+ *   - passou de `medidor.orfao_max_s` (48h) — o último recurso, para quando o
+ *     registro não diz nada, ou para o agente que morreu sozinho numa sessão
+ *     que segue aberta.
+ *
+ * A parte que ele acumulou se perde: não há como saber o que era dele.
+ */
+function limparOrfaos(cfg, encerrada) {
+  const vivas = new Map();
+  const viva = s => {
+    if (!vivas.has(s)) vivas.set(s, encerrada && s === encerrada ? false : sessaoViva(s));
+    return vivas.get(s);
+  };
   let removidos = 0;
   for (const e of ler(VOO)) {
-    if (Date.now() - t0De(e) > maxS * 1000) {
+    const velho = Date.now() - t0De(e) > cfg.medidor.orfao_max_s * 1000;
+    if (viva(e.sessao) === false || velho) {
       apagar(e.arquivo); apagar(arq(ACUM, e.id)); removidos++;
     }
   }
-  if (removidos && emVoo().length === 0 && !fechandoAgora()) descartarTudo();
+  if (!removidos || emVoo().length || fechandoAgora()) return;
+  // O céu esvaziou com a saída deles. Quem já tinha terminado ainda tem uma
+  // parte para receber: fecha o trecho. Sem ninguém, a cadeia acaba.
+  if (listar(FIM).length && fs.existsSync(core.F.marco)) fecharTrecho(cfg);
+  else descartarTudo();
 }
 
 /* ------------------------------ começar ------------------------------ */
@@ -294,9 +335,14 @@ function vigiar(cfg, est, nowS) {
 
 try {
   const ev = lerStdin();
-  if (ev && ev.agent_id) {
+  if (ev && ev.hook_event_name === 'SessionEnd') {
+    // A sessão fechou: os subagentes dela morreram com ela, com ou sem Stop.
+    // O processo ainda existe enquanto este hook roda — por isso ela é dita
+    // morta aqui, e não perguntada ao registro.
+    limparOrfaos(core.lerConfig(), ev.session_id || null);
+  } else if (ev && ev.agent_id) {
     const cfg = core.lerConfig();
-    limparOrfaos(cfg.medidor.orfao_max_s);
+    limparOrfaos(cfg);
     core.limparTmp();
 
     if (ev.hook_event_name === 'SubagentStart') {

@@ -104,11 +104,27 @@ tela. Não é bloqueio (D1): é confirmação informada, e quem decide é você.
 
 ## Ondas, trechos e custo
 
-**D25 — Varrer órfãos do medidor.** Se a sessão morre com um subagente
-rodando, o `SubagentStop` nunca dispara e ele fica "em voo" para sempre,
-levando parte de cada trecho. Entrada em voo há mais de `medidor.orfao_max_s`
-(2h) é descartada antes de qualquer medição — e a parte que ela acumulou se
-perde, porque não há como saber o que era dela.
+**D25 — Órfão é quem perdeu a sessão, não quem passou da hora.** Se a sessão
+morre com um subagente rodando, o `SubagentStop` dele nunca dispara, e ele
+ficaria "em voo" para sempre, levando parte de cada trecho. A primeira regra
+era a idade: passou de 2h, é órfão. Mas agente de 12h trabalhando existe — e
+era descartado vivo. A idade não prova nada; o que prova é a sessão:
+
+| Situação | Como se sabe | O subagente |
+|---|---|---|
+| a sessão fechou | hook `SessionEnd` (documentado) | sai na hora |
+| a sessão morreu sem avisar (travou, a máquina desligou) | registro do Claude Code com o processo morto | sai na hora |
+| a sessão está viva | registro com o processo vivo | fica — 2h ou 12h |
+| o registro não diz (formato mudou, sessão fora dele) | — | só depois de `medidor.orfao_max_s` (48h) |
+
+O registro é o `~/.claude/sessions/<pid>.json` que o próprio Claude Code
+mantém, um por sessão aberta, com o `sessionId` — não documentado, e por isso
+só confia em resposta positiva: sem registro, vale a idade longa. As 48h também
+pegam o subagente que morreu sozinho numa sessão que segue aberta.
+
+A parte que o órfão acumulou se perde: não há como saber o que era dele. E se a
+saída dele esvazia o céu, quem já tinha terminado ainda recebe a sua parte — o
+trecho fecha, em vez de ser descartado.
 
 **D28 — Sem projeção de consumo.** Havia uma: extrapolava `%/h` até 100% e
 emitiu "acaba ANTES do reset" com 1% consumido — media 55min de trabalho e
@@ -446,6 +462,8 @@ sua sessão do Claude Code.
 
 - Os limites só existem para assinante Claude.ai Pro/Max.
 - O pedido `get_usage` não é documentado (D39).
+- O registro de sessões em `~/.claude/sessions` não é documentado (D25). Se
+  sumir, sobram o `SessionEnd` e a idade de 48h.
 - Relógio da máquina torto = countdown mentiroso.
 - A pasta da extensão muda a cada atualização (D43).
 - Promoção muda o denominador: com o limite temporariamente maior, o percentual

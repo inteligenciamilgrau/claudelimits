@@ -12,7 +12,7 @@
  *
  *   1. node-local.txt          — onde está o node (fica fora do git)
  *   2. ~/.claude/skills/cota/  — a skill, com o comando literal montado
- *   3. ~/.claude/settings.json — os quatro hooks
+ *   3. ~/.claude/settings.json — os cinco hooks
  *
  * A skill precisa do caminho literal (D27): um agente que nunca viu a
  * ferramenta não deveria ter que substituir placeholder. Por isso o repo
@@ -40,6 +40,8 @@ const HOOKS = {
   PreToolUse:       { script: 'hooks/admissao.js', matcher: 'Agent|Task|Workflow' },
   SubagentStart:    { script: 'hooks/medidor.js' },
   SubagentStop:     { script: 'hooks/medidor.js' },
+  // D25 — subagente de sessão que fechou não vai dar Stop: sai daqui.
+  SessionEnd:       { script: 'hooks/medidor.js' },
 };
 
 const barras = p => p.replace(/\\/g, '/');

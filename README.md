@@ -66,7 +66,7 @@ Com isso a ferramenta:
 | `cota.js` | O leitor: janelas, ritmo, admissão, diagnóstico. | você / o agente |
 | `hooks/aviso.js` | Avisa quando a cota passa do limiar. | hook `UserPromptSubmit` |
 | `hooks/admissao.js` | Pergunta antes de operação pesada com a cota alta. | hook `PreToolUse` |
-| `hooks/medidor.js` | Mede o custo de cada subagente, em trechos, e vigia. | hooks `SubagentStart` / `SubagentStop` |
+| `hooks/medidor.js` | Mede o custo de cada subagente, em trechos, e vigia. | hooks `SubagentStart` / `SubagentStop` / `SessionEnd` |
 | `skill/SKILL.modelo.md` | Ensina o agente a usar. O instalador gera o literal. | skill |
 | `instalar.js` | Liga tudo nesta máquina, **confere** que ligou, e desfaz. | `node instalar.js` |
 | `run.ps1` | Invólucro do Windows para os hooks. | os hooks |
@@ -93,7 +93,7 @@ O script:
 
 1. grava `node-local.txt` com o caminho deste node (fica fora do git);
 2. gera `~/.claude/skills/cota/SKILL.md` com o comando literal desta máquina;
-3. acrescenta os quatro hooks em `~/.claude/settings.json`, preservando o que já
+3. acrescenta os cinco hooks em `~/.claude/settings.json`, preservando o que já
    estiver lá e guardando o original em `settings.json.bak-cota`;
 4. **executa** o que acabou de gerar — inclusive uma leitura de verdade da
    cota — e só declara sucesso se tudo responder.
@@ -126,7 +126,7 @@ a pasta se quiser.
 O instalador não faz mágica — são três passos. Trocando `<PASTA>` pela pasta
 deste projeto e `<NODE>` pelo caminho do seu node:
 
-**1. `~/.claude/settings.json`** — os quatro hooks.
+**1. `~/.claude/settings.json`** — os cinco hooks.
 
 > **Some, não substitua.** Se o arquivo já existe, acrescente estas chaves ao
 > que está lá. Colar o bloco por cima apaga suas permissões, modelo e tema.
@@ -147,6 +147,9 @@ No Windows, o comando é sempre `powershell ... -File <PASTA>/run.ps1 <script>`:
       { "hooks": [{ "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File <PASTA>/run.ps1 hooks/medidor.js" }] }
     ],
     "SubagentStop": [
+      { "hooks": [{ "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File <PASTA>/run.ps1 hooks/medidor.js" }] }
+    ],
+    "SessionEnd": [
       { "hooks": [{ "type": "command", "command": "powershell -NoProfile -ExecutionPolicy Bypass -File <PASTA>/run.ps1 hooks/medidor.js" }] }
     ]
   }
@@ -215,7 +218,7 @@ nunca vira código de erro** — se der erro, é problema de verdade.
 | `admissao.margem` | `0.7` | Só autoriza se couber em 70% do que resta. |
 | `vigia.limiar_5h` | `70` | % a partir do qual o vigia fala no fim de cada subagente. |
 | `vigia.repetir_min` | `5` | Curto: durante workflow a cota anda rápido. |
-| `medidor.orfao_max_s` | `7200` | Acima disso, subagente em voo é considerado órfão. |
+| `medidor.orfao_max_s` | `172800` | Subagente em voo é órfão quando a sessão dele fechou ou morreu; esta idade (48h) só decide quando o Claude Code não diz. |
 | `medidor.trecho_s` | `120` | Quem termina só lê a cota se o trecho medido já tem isso; senão a parte dele sai no próximo marco. |
 | `poda.dias` | `14` | Histórico mais velho que isso sai. |
 | `poda.max_linhas` | `5000` | Teto de linhas nos arquivos de amostra. |

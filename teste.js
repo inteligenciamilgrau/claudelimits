@@ -71,8 +71,14 @@ if (modo === 'ok') responde({ subtype: 'success', response: { subscription_type:
 `);
 
 const TMP = novaPasta('teste');
+// Um registro de sessões do Claude Code falso, vazio: os testes nunca leem o
+// de verdade (D25). Os que precisam dele escrevem aqui.
+const CLAUDE_FALSO = novaPasta('claude-config');
+const SESSOES = path.join(CLAUDE_FALSO, 'sessions');
+fs.mkdirSync(SESSOES);
 const ENV = Object.assign({}, process.env,
-  { CLAUDE_COTA_DIR: TMP, COTA_CLAUDE: FALSO, COTA_FALSO_BASE: String(BASE_MS) });
+  { CLAUDE_COTA_DIR: TMP, COTA_CLAUDE: FALSO, COTA_FALSO_BASE: String(BASE_MS),
+    CLAUDE_CONFIG_DIR: CLAUDE_FALSO });
 for (const k of ['COTA_FALSO', 'COTA_FALSO_P5', 'COTA_FALSO_ARGS', 'COTA_SONDA_ATIVA']) delete ENV[k];
 
 // Módulos carregados aqui dentro escrevem numa pasta própria, nunca no real.
@@ -487,11 +493,50 @@ const tipos = amostras().slice(antesD).map(a => a.sessao);
 ok(tipos.length === 1 && tipos[0] === 's',
    'quem começou antes da cadeia não vira amostra (custo subcontado); quem começou depois, sim');
 
-// D25 — órfão: o SubagentStop nunca veio.
-fs.writeFileSync(path.join(TMPM, 'em-voo', 'orfao.json'), JSON.stringify({ tipo: 'X', t0_ms: Date.now() - 99999000 }));
+/*
+ * D25 — órfão é quem perdeu a sessão, não quem passou da hora. Agente de 12h
+ * trabalhando existe; o de 5 minutos cuja sessão morreu já é órfão.
+ */
+const HORA = 3600000;
+const sessao = (id, pid) => fs.writeFileSync(path.join(SESSOES, pid + '.json'),
+  JSON.stringify({ pid, sessionId: id, kind: 'interactive' }));
+// Um processo que já terminou: o pid dele está morto.
+const pidMorto = Number(require('child_process').spawnSync(process.execPath,
+  ['-e', 'process.stdout.write(String(process.pid))'], { encoding: 'utf8' }).stdout);
+const emVooM = (id, sess, idadeMs) => fs.writeFileSync(path.join(TMPM, 'em-voo', id + '.json'),
+  JSON.stringify({ tipo: 'X', sessao: sess, t0_ms: Date.now() - idadeMs }));
+const voando = id => fs.existsSync(path.join(TMPM, 'em-voo', id + '.json'));
+
+sessao('sessao-viva', process.pid);
+sessao('sessao-morta', pidMorto);
+emVooM('longo12h', 'sessao-viva', 12 * HORA);
+emVooM('recente-morto', 'sessao-morta', 5 * 60000);
+emVooM('sem-registro', 'sessao-desconhecida', 3 * HORA);
+emVooM('antiquissimo', 'sessao-desconhecida', 49 * HORA);
 med('SubagentStart', 'f1');
-ok(!fs.existsSync(path.join(TMPM, 'em-voo', 'orfao.json')), 'órfão de mais de 2h é varrido (D25)');
-med('SubagentStop', 'f1', { COTA_FALSO_P5: '9', COTA_FALSO_R5: '5' });
+ok(voando('longo12h'), 'agente de 12h com a sessão viva continua em voo');
+ok(!voando('recente-morto'), 'agente de 5min cuja sessão morreu sai na hora');
+ok(voando('sem-registro'), 'sem registro da sessão, 3h não basta para chamar de órfão');
+ok(!voando('antiquissimo'), 'sem registro, passadas 48h, sai — o último recurso');
+
+// SessionEnd: a sessão fechou, os subagentes dela foram junto.
+emVooM('da-que-fecha', 'sessao-que-fecha', 60000);
+hook('medidor.js', { hook_event_name: 'SessionEnd', session_id: 'sessao-que-fecha', reason: 'other' }, ENVM);
+ok(!voando('da-que-fecha'), 'SessionEnd tira os subagentes da sessão que fechou');
+ok(voando('longo12h') && voando('f1'), 'e só os dela');
+
+// Quando a saída de um órfão esvazia o céu, quem já terminou ainda recebe.
+for (const id of ['longo12h', 'sem-registro']) fs.unlinkSync(path.join(TMPM, 'em-voo', id + '.json'));
+recuar(TMPM, ['f1'], 60);
+med('SubagentStart', 'h1'); recuar(TMPM, ['f1', 'h1'], 60);
+med('SubagentStop', 'h1', { COTA_FALSO_P5: '9', COTA_FALSO_R5: '5' });
+const nAntesSE = amostras().length;
+const vooF1 = path.join(TMPM, 'em-voo', 'f1.json');
+fs.writeFileSync(vooF1, JSON.stringify(Object.assign(core.lerJson(vooF1, {}), { sessao: 'sessao-que-fecha' })));
+hook('medidor.js', { hook_event_name: 'SessionEnd', session_id: 'sessao-que-fecha', reason: 'other' },
+     Object.assign({}, ENVM, { COTA_FALSO_P5: '11', COTA_FALSO_R5: '5' }));
+ok(amostras().length === nAntesSE + 1 && amostras().pop().custo5 > 0,
+   'o órfão sai e o céu esvazia: quem já tinha terminado recebe a parte dele, não é descartado');
 
 // Desligada (D2): não mede, não lê, e não deixa nada para trás.
 fs.writeFileSync(path.join(TMPM, 'config.json'), JSON.stringify({ ligado: false }));
@@ -729,7 +774,8 @@ ok(!!manual, 'o README tem um bloco de settings.json válido');
 if (manual) {
   const cmdWin = montar('win32', 'C:/proj/cota', 'C:\\node\\node.exe');
   const HOOKS = { UserPromptSubmit: 'hooks/aviso.js', PreToolUse: 'hooks/admissao.js',
-                  SubagentStart: 'hooks/medidor.js', SubagentStop: 'hooks/medidor.js' };
+                  SubagentStart: 'hooks/medidor.js', SubagentStop: 'hooks/medidor.js',
+                  SessionEnd: 'hooks/medidor.js' };
   for (const [evento, script] of Object.entries(HOOKS)) {
     const g = (manual.hooks || {})[evento];
     ok(!!g && g[0].hooks[0].command === cmdWin(script), 'o hook ' + evento + ' do README bate com o do instalador');
@@ -737,9 +783,9 @@ if (manual) {
   ok(manual.hooks.PreToolUse[0].matcher === 'Agent|Task|Workflow', 'e o matcher do PreToolUse');
   ok(!manual.statusLine, 'e não há status line (D44)');
   const noInstalador = (fonteInstalador.match(/^\s+(\w+):\s*\{ script:/gm) || []).map(l => l.trim().split(':')[0]);
-  ok(noInstalador.length === 4 && noInstalador.every(e => e in manual.hooks) &&
+  ok(noInstalador.length === 5 && noInstalador.every(e => e in manual.hooks) &&
      Object.keys(manual.hooks).every(e => noInstalador.includes(e)),
-     'o instalador registra exatamente os quatro hooks do README');
+     'o instalador registra exatamente os cinco hooks do README');
 }
 
 /* ------------------------------ instalador ------------------------------ */
@@ -795,8 +841,8 @@ ok(s1j.model === 'opus', 'preserva o que já estava no settings.json');
 ok(!s1j.statusLine, 'remove a status line da versão antiga (D44)');
 ok(s1j.hooks.UserPromptSubmit.some(g => g.hooks.some(h => h.command === alheio.command)),
    'e não toca no hook de outra ferramenta');
-ok(['UserPromptSubmit', 'PreToolUse', 'SubagentStart', 'SubagentStop'].every(e =>
-   s1j.hooks[e].some(g => g.hooks.some(h => h.command.includes(COPIA_B)))), 'liga os quatro hooks');
+ok(['UserPromptSubmit', 'PreToolUse', 'SubagentStart', 'SubagentStop', 'SessionEnd'].every(e =>
+   s1j.hooks[e].some(g => g.hooks.some(h => h.command.includes(COPIA_B)))), 'liga os cinco hooks');
 ok(!JSON.stringify(s1j).includes('/velho/'),
    'hooks de quando o projeto morava em outra pasta são atualizados, não deixados falhando (#7)');
 ok(s1j.hooks.UserPromptSubmit.reduce((n, g) => n + g.hooks.filter(doCota).length, 0) === 1,
