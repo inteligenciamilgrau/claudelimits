@@ -86,7 +86,8 @@ function relatorioJson() {
     semanal_por_modelo: est.modelos || [],
     ...(core.CODEX ? { provider: 'codex', plano: est.plano, limites: est.limites,
       creditos: est.creditos, resets_disponiveis: est.resets_disponiveis,
-      estimativa: base.metadados, hooks: require('./lib/diagnostico-hooks-codex').diagnosticoHooks() } : {}),
+      estimativa: base.metadados, economia: require('./lib/economia-codex').avaliarEconomia(janelas, cfg),
+      hooks: require('./lib/diagnostico-hooks-codex').diagnosticoHooks() } : {}),
     ritmo_por_agente: base.ritmo,
     duracao_por_agente: base.duracao,
   };
@@ -141,6 +142,7 @@ function cmdStatus(json) {
   say('');
   linhaJanela('7d', janelas.sete, hist, est, 'pct7', 'reset7', true);
   if (core.CODEX) {
+    say('  ' + require('./lib/economia-codex').avaliarEconomia(janelas, cfg).mensagem);
     say('  Créditos: ' + (est.creditos?.balance ?? 'não informado') +
       ' · resets disponíveis: ' + (est.resets_disponiveis ?? 'não informado'));
     if (Object.keys(est.limites || {}).some(k => k !== 'codex'))
@@ -245,6 +247,15 @@ function cmdCabe(n, tipo, json) {
   if (core.CODEX) {
     res.estimativa = base.metadados;
     res.hooks = require('./lib/diagnostico-hooks-codex').diagnosticoHooks();
+    res.economia = require('./lib/economia-codex').avaliarEconomia(janelas, cfg);
+    if (res.economia.iniciar_nova_onda === false) {
+      res.veredito_calculo = res.veredito;
+      res.quantos_cabem_calculo = res.quantosCabem;
+      res.quantosCabem = 0;
+      res.veredito = res.economia.nivel === 'sem_dado' ? 'sem_dado' : 'nao_cabe';
+      res.motivo = 'Recomendação de economia: ' + res.economia.mensagem;
+      res.onda = { tamanho: 0, restantes: n, porque: res.economia.mensagem };
+    }
   }
   if (json) { say(JSON.stringify(res, null, 2)); return 0; }
 
@@ -271,7 +282,9 @@ function cmdCabe(n, tipo, json) {
         `(${core.fmtDuracao(res.esperarAte - nowS)}) e a janela de 5h volta inteira` + C.r);
   }
   // D29 — a resposta acionável não é "cabe?", é "quantos AGORA?".
-  if (res.onda && res.onda.restantes > 0) {
+  if (res.onda && res.onda.tamanho === 0) {
+    say('  Nenhuma nova onda recomendada agora.');
+  } else if (res.onda && res.onda.restantes > 0) {
     say('');
     say(C.cy + C.b + `  dispare ${res.onda.tamanho} agora` + C.r +
         C.d + `, depois reavalie (faltam ${res.onda.restantes})` + C.r);
@@ -473,6 +486,13 @@ function cmdConfig(caminho, valor) {
   }
 
   o[ultima] = convertido;
+  if (core.CODEX && partes[0] === 'economia') {
+    const e = cfg.economia;
+    if (![e.evitar_ondas_abaixo_pct, e.concluir_abaixo_pct].every(v => Number.isFinite(v) && v >= 0 && v <= 100) ||
+        e.concluir_abaixo_pct > e.evitar_ondas_abaixo_pct) {
+      falhar('CONFIG_INVALIDA', 'Economia: use 0–100 e concluir_abaixo_pct <= evitar_ondas_abaixo_pct.');
+    }
+  }
   core.gravarConfig(cfg);
   say(caminho + ' = ' + o[ultima]);
   return 0;
@@ -531,7 +551,7 @@ const normalizar = s => String(s || '')
   .toLowerCase().replace(/^-+/, '');
 
 const SINONIMOS = {
-  status: ['status', 'st', 'ver', 'agora', 'situacao', 'estado', 'cota', 'quanto', 'usage'],
+  status: ['status', 'st', 'ver', 'agora', 'situacao', 'estado', 'cota', 'quanto', 'usage', 'checkpoint'],
   cabe:   ['cabe', 'aguenta', 'posso', 'suporta', 'check', 'cabem'],
   sondar: ['sondar', 'sonda', 'atualizar', 'renovar', 'refresh'],
   audit:  ['audit', 'auditoria', 'auditar', 'debug', 'diagnostico', 'conferir', 'doctor'],

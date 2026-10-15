@@ -48,6 +48,10 @@ try {
 
   const nowS = core.agora();
   const j = core.lerJanelas(est, cfg, nowS, core.lerHistorico());
+  if (core.CODEX) {
+    const politica = require('../lib/economia-codex').avaliarEconomia(j, cfg);
+    if (politica.iniciar_nova_onda === false) perguntar(politica.mensagem);
+  }
 
   const acima = [];
   const ver = (jan, rotulo, semanal) => {

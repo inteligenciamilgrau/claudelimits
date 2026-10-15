@@ -43,6 +43,20 @@ subagentes; não espere o hook avisar. Com pouco saldo e sem base, prefira
 concluir o trecho atual e registrar pendências, sem abrir uma onda apenas
 para calibrar. A calibração também consome o orçamento.
 
+Use `checkpoint` antes e depois de etapas maiores. É uma consulta de status,
+com cache de até 60 segundos; `sondar` força atualização. Não há timer em fundo.
+Leia `economia.nivel` e siga a recomendação configurada, mesmo sem base de custo:
+
+- `normal`: prefira uma tarefa por vez e consulte entre etapas.
+- `reduzir`: por padrão, menos de 30% disponíveis em alguma janela; evite novas ondas.
+- `concluir`: por padrão, menos de 15%; conclua o trecho, registre pendências e informe o reset.
+- `sem_dado`: não suponha saldo livre; diagnostique antes de nova onda.
+- `desligada`: respeite a escolha do usuário de desativar essa política.
+
+Esses limites são preferências operacionais, não estimativas de custo.
+`cabe` mantém o veredito matemático em `veredito_calculo` quando a política
+recomenda onda de tamanho zero. Nenhum hook cancela trabalho em andamento.
+
 `--json` mantém formato JSON em falhas: `erro.codigo`, `erro.mensagem` e,
 quando disponível, `erro.acao`. Exit code 1 é falha e 2 é desativado.
 EPERM/EACCES no cache pode indicar restrição do sandbox: não anuncie sucesso

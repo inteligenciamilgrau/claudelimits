@@ -8,10 +8,12 @@ Implementação e revisão concluídas.
 - Exclusão de trechos mistos e troca detectada de perfil no término do agente.
 - Ponderação por idade, confiança heurística, variabilidade e consumo coletivo.
 - Documentação e skill instalada atualizadas.
+- Política de economia configurável: abaixo de 30% restantes evita novas ondas;
+  abaixo de 15% recomenda concluir e registrar pendências. Checkpoint entre etapas.
 
 ## Validação
 
-- 14 testes ponta a ponta do Codex passaram.
+- 16 testes ponta a ponta do Codex passaram (incluindo economia e limiares).
 - 6 testes de erros reais de filesystem/RPC passaram.
 - 7 testes de estimativa passaram.
 - Suíte completa do Claude passou; git diff --check passou.

@@ -106,6 +106,37 @@ um modelo. Para economizar cota durante desenvolvimento, consulte o saldo
 entre etapas, prefira uma tarefa por vez e não abra outra onda com `SEM BASE`
 e saldo baixo. Uma onda de calibração também pode consumir bastante cota.
 
+### Economia entre etapas
+
+`node cota-codex.js checkpoint` consulta o saldo e a recomendação antes/depois
+de uma etapa maior, mesmo sem subagentes. Usa o cache normal (60 segundos);
+`sondar` força atualização. Não há timer nem consultas enquanto estiver parado.
+
+Por padrão, a janela mais apertada governa:
+
+- Menos de **30% disponíveis**: evitar novas ondas; preferir trabalho sequencial.
+- Menos de **15% disponíveis**: concluir o trecho atual, registrar pendências
+  e informar quando o limite renova.
+
+```bash
+node cota-codex.js config economia.evitar_ondas_abaixo_pct 30
+node cota-codex.js config economia.concluir_abaixo_pct 15
+node cota-codex.js config economia.ligado false
+```
+
+Os valores são percentuais **restantes**, de 0 a 100; o limiar de conclusão
+não pode superar o de evitar ondas. A comparação é estrita: exatamente 30%
+ainda é normal, exatamente 15% ainda é redução. Um dado velho marcado como
+`piso` fornece apenas um teto para o saldo restante. Sem dado utilizável,
+a política não recomenda nova onda.
+
+`--json` inclui `economia`; `cabe` recomenda onda zero nessas condições,
+mesmo quando não há base de custo. O resultado original permanece em
+`veredito_calculo` e `quantos_cabem_calculo`. São recomendações configuráveis:
+os hooks acrescentam contexto, não bloqueiam ferramentas nem cancelam tarefas.
+Os avisos respeitam as chaves de ativação e os intervalos já configurados.
+Esta política é exclusiva do Codex; Claude mantém seu comportamento anterior.
+
 ## Versão para Claude Code
 
 Deixa o agente do Claude Code saber quanto da sua cota de uso já foi gasto, e

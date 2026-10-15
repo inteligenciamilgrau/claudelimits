@@ -46,6 +46,13 @@ try {
   // texto formatado: o countdown muda a cada minuto e faria o aviso repetir
   // sempre. A faixa de 10 em 10 deixa escalar (80% → 90%) sem virar spam.
   const chaves = [];
+  if (core.CODEX) {
+    const p = require('../lib/economia-codex').avaliarEconomia(j, cfg);
+    if (p.nivel === 'reduzir' || p.nivel === 'concluir') {
+      linhas.push(p.mensagem);
+      chaves.push('economia:' + p.nivel + ':' + p.janela + ':' + p.reset);
+    }
+  }
   // `chave` é interna e fixa; `rotulo` é texto de exibição. Mudar a redação do
   // aviso não pode alterar o comportamento do dedupe.
   const checar = (jan, chave, rotulo, limiar, semanal) => {

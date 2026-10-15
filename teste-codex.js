@@ -95,7 +95,7 @@ test('diagnóstico observa ciclos sem alegar origem automática', () => {
 test('admissão Codex injeta contexto sem ask e aviso entrega contexto', () => {
   response.rateLimits.primary.usedPercent = 85; save(); json(['sondar', '--json']);
   const r = JSON.parse(run('hooks/codex.js', ['admissao'], JSON.stringify({ tool_name: 'spawn_agent' })));
-  assert.ok(r.hookSpecificOutput.additionalContext.includes('85'));
+  assert.match(r.hookSpecificOutput.additionalContext, /15\.0% disponível/);
   assert.equal(r.hookSpecificOutput.permissionDecision, undefined);
   assert.ok(JSON.parse(run('hooks/codex.js', ['aviso'], '{}')).hookSpecificOutput.additionalContext);
 });
@@ -125,10 +125,40 @@ test('parser valida duração, limites ausentes e percentual inválido', () => {
   assert.equal(parse({ rateLimits: { secondary: response.rateLimits.secondary } }).snap.pct5, null);
 });
 test('troca de conta arquiva base; não herda custo', () => {
+  response.rateLimits.primary.usedPercent = 20;
   response.accountId = 'account-other'; save(); json(['sondar', '--json']);
   assert.equal(json(['cabe', '4', '--json']).veredito, 'sem_base');
   assert.equal(read('estado.json').accountId, 'account-other');
   assert.ok(fs.readdirSync(path.join(state, 'arquivo')).length);
+});
+test('economia governa ondas, valida configuração e respeita desligamento', () => {
+  response.rateLimits.primary.usedPercent = 71; save(); json(['sondar', '--json']);
+  let r = json(['cabe', '2', '--json']);
+  assert.equal(r.economia.nivel, 'reduzir'); assert.equal(r.onda.tamanho, 0);
+  assert.equal(json(['checkpoint', '--json']).economia.nivel, 'reduzir');
+  const aviso = JSON.parse(run('hooks/codex.js', ['admissao'], JSON.stringify({ tool_name: 'spawn_agent' })));
+  assert.match(aviso.hookSpecificOutput.additionalContext, /Evite novas ondas/);
+  response.rateLimits.primary.usedPercent = 86; save(); json(['sondar', '--json']);
+  r = json(['cabe', '2', '--json']); assert.equal(r.economia.nivel, 'concluir');
+  assert.match(r.motivo, /registre o que falta/);
+  try { json(['config', 'economia.concluir_abaixo_pct', '50', '--json']); assert.fail('esperava falha'); }
+  catch (e) { assert.equal(JSON.parse(e.stdout).erro.codigo, 'CONFIG_INVALIDA'); }
+  assert.equal(json(['config', '--json']).economia.concluir_abaixo_pct, 15);
+  json(['config', 'economia.ligado', 'false', '--json']);
+  assert.equal(json(['cabe', '2', '--json']).economia.nivel, 'desligada');
+  json(['config', 'economia.ligado', 'true', '--json']);
+  response.rateLimits.primary.usedPercent = 20; save(); json(['sondar', '--json']);
+});
+test('limiares estritos, semanal crítica e dado velho', () => {
+  const { avaliarEconomia } = require('./lib/economia-codex');
+  const cfg = { economia: { ligado: true, evitar_ondas_abaixo_pct: 30, concluir_abaixo_pct: 15 } };
+  const j = pct => ({ pctParaDecidir: pct, estado: 'fresco', resetsAt: reset });
+  assert.equal(avaliarEconomia({ cinco: j(70), sete: j(10) }, cfg).nivel, 'normal');
+  assert.equal(avaliarEconomia({ cinco: j(85), sete: j(10) }, cfg).nivel, 'reduzir');
+  assert.equal(avaliarEconomia({ cinco: j(20), sete: j(86) }, cfg).janela, '7d');
+  assert.equal(avaliarEconomia({}, cfg).nivel, 'sem_dado');
+  const p = avaliarEconomia({ cinco: { ...j(90), estado: 'piso' } }, cfg);
+  assert.equal(p.restante_e_teto, true); assert.match(p.mensagem, /no máximo/);
 });
 test('off impede status de sondar e hooks de medir', () => {
   json(['sondar', '--json']); run('cota-codex.js', ['off']);

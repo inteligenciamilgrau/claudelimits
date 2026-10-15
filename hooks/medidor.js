@@ -335,6 +335,13 @@ function vigiar(cfg, est, nowS) {
   const j = core.lerJanelas(est, cfg, nowS, core.lerHistorico());
   const linhas = [];
   const chaves = [];
+  if (core.CODEX) {
+    const p = require('../lib/economia-codex').avaliarEconomia(j, cfg);
+    if (p.nivel === 'reduzir' || p.nivel === 'concluir') {
+      linhas.push(p.mensagem);
+      chaves.push('economia:' + p.nivel + ':' + p.janela + ':' + p.reset);
+    }
+  }
   for (const [jan, rot, lim] of [[j.cinco, '5h', cfg.vigia.limiar_5h],
                                  [j.sete, 'semanal', cfg.vigia.limiar_7d]]) {
     if (jan.pctParaDecidir === null || jan.pctParaDecidir < lim) continue;
