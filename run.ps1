@@ -1,16 +1,23 @@
-# run.ps1 — wrapper unico, no formato documentado da Anthropic para Windows:
-#   powershell -NoProfile -ExecutionPolicy Bypass -File <caminho>\run.ps1 <script>
+# run.ps1 — wrapper unico dos hooks no Windows, no formato documentado da Anthropic:
+#   powershell -NoProfile -ExecutionPolicy Bypass -File <caminho>\run.ps1 <script> [args]
 #
 # Por que assim: o executavel e um nome simples ("powershell", que esta no PATH)
-# e o caminho vai como ARGUMENTO. Funciona tanto se o Claude Code executar via
-# cmd.exe (que estraga barra normal no executavel) quanto via bash (que come
-# barra invertida). Foi a lambanca das duas tentativas anteriores.
+# e o caminho vai como ARGUMENTO. Funciona tanto se quem executa usar cmd.exe
+# (que estraga barra normal no executavel) quanto bash (que come barra
+# invertida) ou o proprio PowerShell. Foi a lambanca das duas tentativas
+# anteriores. Serve aos dois: Claude Code (run.ps1 hooks/aviso.js) e Codex
+# (run.ps1 hooks/codex.js aviso) - e o comando fica legivel em /hooks.
 #
 # Usa $args e NAO param(): com param() o PowerShell tenta ligar o stdin a um
 # parametro e falha antes de rodar qualquer coisa.
 
+# Sem isto, com o stderr redirecionado (como nos hooks), o PowerShell despeja
+# a barra de progresso "Preparando modulos para primeiro uso" como XML no stderr.
+$ProgressPreference = 'SilentlyContinue'
+
 $alvoRel = $args[0]
 if (-not $alvoRel) { exit 0 }
+$resto = @($args | Select-Object -Skip 1)
 
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 
@@ -24,7 +31,10 @@ $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $node = $null
 $arqLocal = Join-Path $dir 'node-local.txt'
 if (Test-Path $arqLocal) {
-  $lido = (Get-Content $arqLocal -First 1 -ErrorAction SilentlyContinue)
+  # UTF8 explicito: o node-local.txt sai do Node em UTF-8 e o PowerShell 5.1
+  # le como ANSI por padrao. Um caminho com acento (C:\Users\Ana Conceicao, com cedilha e til)
+  # viraria lixo, e o hook falharia CALADO.
+  $lido = (Get-Content $arqLocal -First 1 -Encoding UTF8 -ErrorAction SilentlyContinue)
   if ($lido) { $lido = $lido.Trim() }
   if ($lido -and (Test-Path $lido)) { $node = $lido }
 }
@@ -35,4 +45,4 @@ $alvo = Join-Path $dir $alvoRel
 
 # Repassa o stdin (o JSON do hook) para o node.
 $entrada = $input | Out-String
-$entrada | & $node $alvo
+$entrada | & $node $alvo @resto

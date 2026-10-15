@@ -147,7 +147,7 @@ function inicio(ev, cfg) {
   const agora = Date.now();
   core.gravarJson(arq(VOO, ev.agent_id), {
     tipo: ev.agent_type || null, sessao: ev.session_id || null, t0_ms: agora,
-    ...(core.CODEX ? { perfil: require('../lib/perfil-codex').perfilDoEvento(ev), origem: 'hook' } : {}),
+    ...(core.CODEX ? { perfil: require('../lib/codex/perfil').perfilDoEvento(ev), origem: 'hook' } : {}),
   });
 
   /*
@@ -176,7 +176,7 @@ function fim(ev, cfg) {
   const meu = core.lerJson(arq(VOO, ev.agent_id), null);
   if (!meu) return;
   if (core.CODEX) {
-    const { normalizarPerfil, perfilDoEvento } = require('../lib/perfil-codex');
+    const { normalizarPerfil, perfilDoEvento } = require('../lib/codex/perfil');
     const inicial = normalizarPerfil(meu.perfil), final = perfilDoEvento(ev);
     // Missing stop metadata says nothing; newly supplied or changed metadata
     // cannot be attributed retroactively to the whole interval.
@@ -288,7 +288,7 @@ function registrarTrecho(marco, est, tFim) {
 
   let metadados = {};
   if (core.CODEX) {
-    const { normalizarPerfil, chavePerfil } = require('../lib/perfil-codex');
+    const { normalizarPerfil, chavePerfil } = require('../lib/codex/perfil');
     const perfis = new Map();
     for (const parte of partes) if (tempo(parte) > 0)
       perfis.set(chavePerfil(parte.perfil), normalizarPerfil(parte.perfil));
@@ -336,7 +336,7 @@ function vigiar(cfg, est, nowS) {
   const linhas = [];
   const chaves = [];
   if (core.CODEX) {
-    const p = require('../lib/economia-codex').avaliarEconomia(j, cfg);
+    const p = require('../lib/codex/economia').avaliarEconomia(j, cfg);
     if (p.nivel === 'reduzir' || p.nivel === 'concluir') {
       linhas.push(p.mensagem);
       chaves.push('economia:' + p.nivel + ':' + p.janela + ':' + p.reset);

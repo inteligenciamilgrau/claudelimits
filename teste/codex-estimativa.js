@@ -1,7 +1,11 @@
 'use strict';
+/*
+ * teste/codex-estimativa.js — a base de custo do Codex (lib/codex/estimativa.js),
+ * com amostras montadas à mão: perfil exato, trechos mistos, peso pela idade.
+ */
 const assert = require('node:assert/strict');
-const { baseCodex } = require('./lib/estimativa-codex');
-const an = require('./lib/analise');
+const { baseCodex } = require('../lib/codex/estimativa');
+const an = require('../lib/analise');
 const nowS = 20_000_000;
 const perfil = { modelo: 'modelo-a', esforco: 'alto', velocidade: 'normal' };
 const trecho = (extra = {}) => ({ t: nowS, perfil, seg: 3600, por_tipo: { worker: 3600 },

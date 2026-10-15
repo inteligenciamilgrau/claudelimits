@@ -1,17 +1,18 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * teste.js — exercita a ferramenta inteira em diretório temporário, com um
- * claude FALSO no lugar do de verdade. Não encosta no seu estado real, não
- * usa rede e não gasta cota.
+ * teste/claude.js — exercita a ferramenta inteira em diretório temporário,
+ * com um claude FALSO no lugar do de verdade. Não encosta no seu estado real,
+ * não usa rede e não gasta cota.
  *
- *   node teste.js
+ *   node teste/claude.js      (ou `node teste`, que roda todas as suítes)
  */
 
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const RAIZ = path.join(__dirname, '..');
 
 const C = { r: '\x1b[0m', d: '\x1b[2m', b: '\x1b[1m', cy: '\x1b[36m',
             g: '\x1b[32m', v: '\x1b[31m' };
@@ -24,6 +25,13 @@ function ok(cond, label) {
 const secao = t => console.log('\n' + C.cy + C.b + t + C.r);
 const novaPasta = nome => fs.mkdtempSync(path.join(os.tmpdir(), 'cota-' + nome + '-'));
 const semCor = s => String(s).replace(/\x1b\[[0-9;]*m/g, '');
+// Cópia à mão: o fs.cpSync do Node 22 no Windows estraga nome de pasta com acento.
+function copiar(de, para) {
+  if (fs.statSync(de).isDirectory()) {
+    fs.mkdirSync(para, { recursive: true });
+    for (const n of fs.readdirSync(de)) copiar(path.join(de, n), path.join(para, n));
+  } else fs.copyFileSync(de, para);
+}
 const WIN = process.platform === 'win32';
 
 const NOW = Math.floor(Date.now() / 1000);
@@ -84,24 +92,24 @@ for (const k of ['COTA_FALSO', 'COTA_FALSO_P5', 'COTA_FALSO_ARGS', 'COTA_SONDA_A
 // Módulos carregados aqui dentro escrevem numa pasta própria, nunca no real.
 process.env.CLAUDE_COTA_DIR = novaPasta('inproc');
 process.env.COTA_CLAUDE = FALSO;
-const core = require('./lib/core');
-const an = require('./lib/analise');
-const sonda = require('./lib/sonda');
+const core = require('../lib/core');
+const an = require('../lib/analise');
+const sonda = require('../lib/sonda');
 
 const cli = (args, envExtra) => {
   try {
-    return execFileSync(process.execPath, [path.join(__dirname, 'cota.js')].concat(args),
+    return execFileSync(process.execPath, [path.join(RAIZ, 'cota.js')].concat(args),
       { encoding: 'utf8', env: Object.assign({}, ENV, envExtra || {}) });
   } catch (e) { return (e.stdout || '') + (e.stderr || ''); }
 };
 const cliCod = (args, envExtra) => {
   try {
-    return { out: execFileSync(process.execPath, [path.join(__dirname, 'cota.js')].concat(args),
+    return { out: execFileSync(process.execPath, [path.join(RAIZ, 'cota.js')].concat(args),
       { encoding: 'utf8', env: Object.assign({}, ENV, envExtra || {}) }), cod: 0 };
   } catch (e) { return { out: (e.stdout || '') + (e.stderr || ''), cod: e.status }; }
 };
 const hook = (arquivo, ev, envExtra) => execFileSync(
-  process.execPath, [path.join(__dirname, 'hooks', arquivo)],
+  process.execPath, [path.join(RAIZ, 'hooks', arquivo)],
   { input: JSON.stringify(ev), encoding: 'utf8', env: Object.assign({}, ENV, envExtra || {}) });
 
 const lerEm = dir => f => core.lerJson(path.join(dir, f), null);
@@ -144,7 +152,7 @@ const rCurto = an.ritmo([{ t: NOW - 27, pct5: 10, reset5: 1 }, { t: NOW, pct5: 1
 ok(rCurto.pctPorHora === null && /27s/.test(rCurto.motivo || ''), 'intervalo curto não vira ritmo, e diz por quê');
 // D28 — a projeção saiu inteira; a ausência é o teste.
 ok(typeof an.projecao === 'undefined', 'analise.js não exporta projeção');
-ok(!/estouraAntesDoReset/.test(fs.readFileSync(path.join(__dirname, 'cota.js'), 'utf8')),
+ok(!/estouraAntesDoReset/.test(fs.readFileSync(path.join(RAIZ, 'cota.js'), 'utf8')),
    'cota.js não fala em estouro previsto');
 
 /* ------------------------------ admissão ------------------------------ */
@@ -402,7 +410,7 @@ ok(core.lerJsonl(path.join(TMPS, 'historico.jsonl')).length >= 2, 'e cada númer
 // A trava: N hooks juntos não viram N processos do claude.
 const garantir = esperar => JSON.parse(execFileSync(process.execPath, ['-e',
   `const s=require(process.argv[1]);console.log(JSON.stringify(s.garantirFresco(0,{esperar:${esperar}})))`,
-  path.join(__dirname, 'lib', 'sonda.js')],
+  path.join(RAIZ, 'lib', 'sonda.js')],
   { encoding: 'utf8', env: Object.assign({}, ENV, ENVS, { COTA_FALSO_P5: '50' }) }));
 estadoEm(TMPS)(Object.assign({}, lerS('estado.json'), { t: NOW - 999 }));
 fs.writeFileSync(path.join(TMPS, 'sonda.trava'), '');
@@ -615,7 +623,7 @@ fs.writeFileSync(CONDUTOR, [
 ].join('\n'));
 const N = 12;
 const ids = Array.from({ length: N }, (_, i) => 'c' + i);
-execFileSync(process.execPath, [CONDUTOR, JSON.stringify(ids), path.join(__dirname, 'hooks', 'medidor.js'), 'SubagentStart'],
+execFileSync(process.execPath, [CONDUTOR, JSON.stringify(ids), path.join(RAIZ, 'hooks', 'medidor.js'), 'SubagentStart'],
   { env: Object.assign({}, ENV, ENVC), encoding: 'utf8', timeout: 60000 });
 ok(listarEm(TMPC, 'em-voo').length === N, `os ${N} subagentes simultâneos foram todos registrados`);
 ok(fs.existsSync(path.join(TMPC, 'marco.json')), 'com um marco só para todos');
@@ -632,7 +640,7 @@ const tmpNovo = path.join(TMPC, 'estado.json.8888.tmp');
 fs.writeFileSync(tmpVelho, '{}'); fs.writeFileSync(tmpNovo, '{}');
 fs.utimesSync(tmpVelho, new Date(Date.now() - 3600e3), new Date(Date.now() - 3600e3));
 execFileSync(process.execPath, ['-e', 'require(process.argv[1]).limparTmp(300)',
-  path.join(__dirname, 'lib', 'core.js')], { env: Object.assign({}, ENV, ENVC) });
+  path.join(RAIZ, 'lib', 'core.js')], { env: Object.assign({}, ENV, ENVC) });
 ok(!fs.existsSync(tmpVelho) && fs.existsSync(tmpNovo), 'limparTmp remove .tmp velho e preserva o recente');
 
 /* --------------------------- aviso e admissão --------------------------- */
@@ -776,9 +784,10 @@ ok(!fs.existsSync(canario), 'id de agente com ../ não escreve fora da pasta de 
 if (!WIN) {
   ok((fs.statSync(path.join(TMPS, 'estado.json')).mode & 0o077) === 0, 'estado gravado como 0600');
 }
-const fontes = ['cota.js', 'instalar.js', 'lib/core.js', 'lib/sonda.js', 'lib/analise.js',
-                'hooks/aviso.js', 'hooks/admissao.js', 'hooks/medidor.js']
-  .map(f => fs.readFileSync(path.join(__dirname, f), 'utf8')).join('\n')
+const fontes = ['cota.js', 'instalar.js', 'lib/core.js', 'lib/sonda.js', 'lib/analise.js', 'lib/comando.js',
+                'hooks/aviso.js', 'hooks/admissao.js', 'hooks/medidor.js', 'hooks/codex.js',
+                ...fs.readdirSync(path.join(RAIZ, 'lib', 'codex')).map(f => 'lib/codex/' + f)]
+  .map(f => fs.readFileSync(path.join(RAIZ, f), 'utf8')).join('\n')
   .replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, '');   // só código, sem os comentários que explicam o porquê
 ok(!/\beval\(|new Function|shell:\s*true/.test(fontes), 'nada de eval, new Function ou shell: true no código');
 ok(!/credentials/.test(fontes), 'e nenhum código lê credencial');
@@ -788,12 +797,10 @@ secao('comando gerado por plataforma');
 
 // O suporte a Linux/macOS nunca rodou lá. O mínimo honesto é provar que o
 // COMANDO gerado está certo nas três, com o módulo `path` de cada uma.
-const fonteInstalador = fs.readFileSync(path.join(__dirname, 'instalar.js'), 'utf8');
-const fnComando = (fonteInstalador.match(/function comando\(script\)[\s\S]*?\n\}/) || [])[0];
-ok(!!fnComando, 'a função comando() existe no instalar.js');
-const montar = (plat, dir, node) => new Function(
-  'WINDOWS', 'DIR', 'NODE', 'path', 'barras', fnComando + '; return comando;'
-)(plat === 'win32', dir, node, plat === 'win32' ? path.win32 : path.posix, p => p.replace(/\\/g, '/'));
+const fonteInstalador = fs.readFileSync(path.join(RAIZ, 'instalar.js'), 'utf8');
+const { comandoHook } = require('../lib/comando');
+const montar = (plat, dir, node) => (script, ...args) => comandoHook(
+  { windows: plat === 'win32', dir, node, pathMod: plat === 'win32' ? path.win32 : path.posix }, script, ...args);
 
 const cLinux = montar('linux', '/home/ana/cota', '/usr/bin/node')('hooks/aviso.js');
 const cWin = montar('win32', 'C:\\Users\\Ana\\cota', 'C:\\node\\node.exe')('hooks/aviso.js');
@@ -803,18 +810,21 @@ ok(/^powershell -NoProfile -ExecutionPolicy Bypass -File C:\/Users\/Ana\/cota\/r
    'no Windows: o formato documentado, com barra normal');
 ok(/-File "C:\/Users\/Ana Maria\/cota\/run\.ps1" hooks\/aviso\.js$/.test(cWinEsp),
    'caminho com espaço vai entre aspas — sem elas o hook falharia calado');
-const atalho = fs.readFileSync(path.join(__dirname, 'cota'), 'utf8');
+ok(/run\.ps1" hooks\/codex\.js medidor$/.test(montar('win32', 'C:\\Users\\Ana Maria\\cota', 'C:\\n.exe')('hooks/codex.js', 'medidor')) &&
+   /"\/home\/ana\/cota\/hooks\/codex\.js" medidor$/.test(montar('linux', '/home/ana/cota', '/usr/bin/node')('hooks/codex.js', 'medidor')),
+   'o Codex usa o mesmo formato, com o modo depois do script');
+const atalho = fs.readFileSync(path.join(RAIZ, 'cota'), 'utf8');
 ok(/^#!\/bin\/sh/.test(atalho) && !/\r/.test(atalho), 'o atalho POSIX é sh de verdade, sem CR');
 
-/* --------------------- README x instalador --------------------- */
-secao('a instalação manual do README bate com a do instalador');
+/* --------------------- instalação manual x instalador --------------------- */
+secao('a instalação manual documentada bate com a do instalador');
 
-const readme = fs.readFileSync(path.join(__dirname, 'README.md'), 'utf8');
-// O bloco da instalação manual é o que tem os hooks — há outros blocos json no README.
+const readme = fs.readFileSync(path.join(RAIZ, 'docs', 'instalar-na-mao.md'), 'utf8');
+// O bloco da instalação manual é o que tem os hooks — pode haver outros blocos json.
 const blocoJson = [...readme.matchAll(/```json\n([\s\S]*?)```/g)].map(m => m[1]).find(b => /"hooks"/.test(b));
 let manual = null;
 try { manual = JSON.parse(blocoJson.split('<PASTA>').join('C:/proj/cota')); } catch (_) {}
-ok(!!manual, 'o README tem um bloco de settings.json válido');
+ok(!!manual, 'docs/instalar-na-mao.md tem um bloco de settings.json válido');
 if (manual) {
   const cmdWin = montar('win32', 'C:/proj/cota', 'C:\\node\\node.exe');
   const HOOKS = { UserPromptSubmit: 'hooks/aviso.js', PreToolUse: 'hooks/admissao.js',
@@ -838,17 +848,14 @@ secao('o instalador de verdade, numa cópia do projeto e numa pasta pessoal fals
 /*
  * Numa CÓPIA do projeto: o instalador grava o node-local.txt na pasta dele, e
  * é esse arquivo que os hooks instalados de verdade usam. Rodando o daqui, um
- * `node teste.js` com outro node repontaria os seus hooks sem aviso (#6).
+ * `node teste` com outro node repontaria os seus hooks sem aviso (#6).
  */
 const COPIA = novaPasta('projeto');
-for (const f of ['cota.js', 'instalar.js', 'run.ps1', 'cota', 'cota.cmd', 'lib/core.js', 'lib/sonda.js',
-                 'lib/analise.js', 'hooks/aviso.js', 'hooks/admissao.js', 'hooks/medidor.js',
-                 'skill/SKILL.modelo.md']) {
-  fs.mkdirSync(path.dirname(path.join(COPIA, f)), { recursive: true });
-  fs.copyFileSync(path.join(__dirname, f), path.join(COPIA, f));
+for (const f of ['cota.js', 'instalar.js', 'run.ps1', 'cota', 'cota.cmd', 'lib', 'hooks', 'skill']) {
+  copiar(path.join(RAIZ, f), path.join(COPIA, f));
 }
 const COPIA_B = COPIA.replace(/\\/g, '/');
-const nodeLocalReal = path.join(__dirname, 'node-local.txt');
+const nodeLocalReal = path.join(RAIZ, 'node-local.txt');
 const lerNL = () => (fs.existsSync(nodeLocalReal) ? fs.readFileSync(nodeLocalReal, 'utf8') : null);
 const nlAntes = lerNL();
 
@@ -871,7 +878,7 @@ fs.writeFileSync(SET, JSON.stringify({
 }));
 const ENVI = Object.assign({}, ENV, { HOME: HOMEI, USERPROFILE: HOMEI, CLAUDE_COTA_DIR: ESTI, COTA_FALSO: 'ok' });
 const instalar = (args, envExtra) => {
-  try { return execFileSync(process.execPath, [path.join(COPIA, 'instalar.js')].concat(args || []),
+  try { return execFileSync(process.execPath, [path.join(COPIA, 'instalar.js'), '--claude'].concat(args || []),
     { encoding: 'utf8', env: Object.assign({}, ENVI, envExtra || {}), timeout: 120000 }); }
   catch (e) { return 'SAIU ' + e.status + ': ' + (e.stdout || '') + (e.stderr || ''); }
 };
@@ -917,11 +924,58 @@ ok(s3j.model === 'opus' && s3j.hooks.UserPromptSubmit[0].hooks[0].command === al
    'e deixa intacto o que não é dele');
 ok(!fs.existsSync(path.join(CLI_I, 'skills', 'cota')), 'e remove a skill');
 
+// Sem flag, o instalador procura o que existe na máquina.
+const semFlag = (dir, envExtra) => {
+  try { return execFileSync(process.execPath, [path.join(dir, 'instalar.js')],
+    { encoding: 'utf8', env: Object.assign({}, ENVI, envExtra || {}), timeout: 120000 }); }
+  catch (e) { return 'SAIU ' + e.status + ': ' + (e.stdout || '') + (e.stderr || ''); }
+};
+const inexistente = path.join(HOMEI, 'nao-existe');
+const semNada = semFlag(COPIA, { COTA_CLAUDE: inexistente, COTA_CODEX: inexistente });
+ok(/^SAIU 1/.test(semNada) && /Não encontrei o Claude Code nem o Codex/.test(semNada),
+   'sem Claude nem Codex na máquina, diz isso e sai sem tocar em nada');
+ok(JSON.stringify(JSON.parse(fs.readFileSync(SET, 'utf8'))) === JSON.stringify(s3j), 'e o settings.json fica como estava');
+
+// Aberto de dentro do .zip, o Windows extrai numa pasta temporária que some.
+const ZIP = path.join(novaPasta('zip'), 'Temp1_claudelimits-main.zip', 'claudelimits-main');
+copiar(COPIA, ZIP);
+const doZip = semFlag(ZIP, { COTA_CODEX: inexistente });
+ok(/^SAIU 1/.test(doZip) && /de dentro do arquivo \.zip/.test(doZip), 'aberto de dentro do .zip, pede para extrair antes');
+
+/*
+ * Node num caminho com acento (C:\Users\Ana Conceição\...), e fora do PATH. O
+ * node-local.txt sai do Node em UTF-8; se um wrapper do Windows o ler como
+ * ANSI, o caminho vira lixo e o hook falha calado — para quem tem acento no
+ * nome de usuário, o que no Brasil é muita gente.
+ */
+if (WIN) {
+  const ACENTO = path.join(novaPasta('acento'), 'João Conceição');
+  fs.mkdirSync(ACENTO);
+  const nodeAcento = path.join(ACENTO, 'node.exe');
+  try { fs.linkSync(process.execPath, nodeAcento); } catch (_) { fs.copyFileSync(process.execPath, nodeAcento); }
+  const PA = novaPasta('projeto-acento');
+  copiar(COPIA, PA);
+  fs.writeFileSync(path.join(PA, 'node-local.txt'), nodeAcento + '\n');
+  fs.writeFileSync(path.join(PA, 'qual-node.js'), 'console.log(process.execPath)');
+  const sys = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
+  const ENVA = Object.assign({}, ENV, { COTA_NODE: '' });
+  for (const k of Object.keys(ENVA)) if (/^path$/i.test(k)) delete ENVA[k];
+  ENVA.Path = sys + ';' + path.join(sys, 'WindowsPowerShell', 'v1.0');
+  let viaPs1 = '';
+  try { viaPs1 = execFileSync('powershell', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+    path.join(PA, 'run.ps1'), 'qual-node.js'], { input: '', encoding: 'utf8', env: ENVA }).trim(); } catch (_) {}
+  ok(viaPs1 === nodeAcento, 'o run.ps1 dos hooks acha o node num caminho com acento');
+  let viaCmd = '';
+  try { viaCmd = execFileSync('cmd.exe', ['/d', '/s', '/c', '""' + path.join(PA, 'cota.cmd') + '" ajuda"'],
+    { encoding: 'utf8', env: ENVA, windowsVerbatimArguments: true }); } catch (e) { viaCmd = String(e.stdout || ''); }
+  ok(/limites de uso/.test(viaCmd), 'e o atalho cota.cmd também');
+}
+
 /* ------------------------- revisão de código ------------------------- */
 secao('achados do /code-review, cada um reproduzido');
 
 const viaNode = (codigo, env) => JSON.parse(execFileSync(process.execPath, ['-e', codigo,
-  path.join(__dirname, 'lib', 'sonda.js'), path.join(__dirname, 'lib', 'core.js')],
+  path.join(RAIZ, 'lib', 'sonda.js'), path.join(RAIZ, 'lib', 'core.js')],
   { encoding: 'utf8', env: Object.assign({}, ENV, env), timeout: 60000 }));
 
 // #1 — depois de uma falha, pausa: nem o `cota` nem os hooks tentam de novo.
@@ -963,7 +1017,7 @@ fs.writeFileSync(CORRIDA, [
   "setTimeout(() => roda({ hook_event_name: 'SubagentStart', agent_id: 'r2' }, env2)",
   "  .then(() => fecha).then(() => process.exit(0)), 800);",
 ].join('\n'));
-execFileSync(process.execPath, [CORRIDA, path.join(__dirname, 'hooks', 'medidor.js'),
+execFileSync(process.execPath, [CORRIDA, path.join(RAIZ, 'hooks', 'medidor.js'),
   JSON.stringify(Object.assign({}, ENV, ENVR, { COTA_FALSO_P5: '14', COTA_FALSO_DORME: '2500' })),
   JSON.stringify(Object.assign({}, ENV, ENVR, { COTA_FALSO_P5: '14' }))], { timeout: 60000 });
 const tR1 = lerLEm(TMPR)('trechos.jsonl');
@@ -1055,7 +1109,7 @@ ok(!fs.readdirSync(TMPY).some(n => n.endsWith('.tmp')), 'sem deixar .tmp');
 
 // #14 — a política dos hooks mora num lugar só.
 const hooksFonte = ['aviso.js', 'admissao.js', 'medidor.js']
-  .map(f => fs.readFileSync(path.join(__dirname, 'hooks', f), 'utf8')).join('\n');
+  .map(f => fs.readFileSync(path.join(RAIZ, 'hooks', f), 'utf8')).join('\n');
 ok(!/garantirFresco\(|TIMEOUT_HOOK_MS/.test(hooksFonte) && /garantirFrescoHook/.test(hooksFonte),
    'os hooks usam o ajudante único da sonda, sem copiar timeout nem tratamento (#14)');
 
@@ -1075,15 +1129,24 @@ secao('o que vai para o GitHub');
 
 // Versionados e os novos ainda não commitados — tudo que não está no .gitignore.
 const versionados = execFileSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'],
-  { cwd: __dirname, encoding: 'utf8' })
-  .split('\n').filter(Boolean).filter(f => fs.existsSync(path.join(__dirname, f)) && !/\.(jpg|png)$/.test(f));
+  { cwd: RAIZ, encoding: 'utf8' })
+  .split('\n').filter(Boolean).filter(f => fs.existsSync(path.join(RAIZ, f)) && !/\.(jpg|png)$/.test(f));
 const pessoais = versionados.filter(f =>
   /[A-Z]:[\\/]Users[\\/](?!Ana|voce|Voce)\w|\/home\/(?!ana|voce)\w+\/|@gmail\.com/.test(
-    fs.readFileSync(path.join(__dirname, f), 'utf8')));
+    fs.readFileSync(path.join(RAIZ, f), 'utf8')));
 ok(pessoais.length === 0, 'nenhum arquivo versionado com caminho de usuário ou e-mail' +
    (pessoais.length ? ': ' + pessoais.join(', ') : ''));
-ok(fs.existsSync(path.join(__dirname, 'LICENSE')), 'tem LICENSE');
-ok(!fs.existsSync(path.join(__dirname, 'sensor.js')), 'e o sensor da status line saiu (D44)');
+ok(fs.existsSync(path.join(RAIZ, 'LICENSE')), 'tem LICENSE');
+ok(!fs.existsSync(path.join(RAIZ, 'sensor.js')), 'e o sensor da status line saiu (D44)');
+ok(fs.readFileSync(path.join(RAIZ, 'lib', 'instalar-windows.ps1')).subarray(0, 3).equals(Buffer.from([0xef, 0xbb, 0xbf])),
+   'o instalar-windows.ps1 tem BOM — sem ele o PowerShell 5.1 troca os acentos das mensagens');
+// Quem chega pelo GitHub clica nos links do README: nenhum pode estar quebrado.
+const quebrados = ['README.md', ...fs.readdirSync(path.join(RAIZ, 'docs')).filter(f => f.endsWith('.md')).map(f => 'docs/' + f)]
+  .flatMap(md => [...fs.readFileSync(path.join(RAIZ, md), 'utf8').matchAll(/\]\(([^)#\s]+)(?:#[^)]*)?\)/g)]
+    .map(m => m[1]).filter(l => !/^[a-z]+:/i.test(l))
+    .filter(l => !fs.existsSync(path.join(RAIZ, path.dirname(md), l))).map(l => md + ' → ' + l));
+ok(quebrados.length === 0, 'nenhum link relativo quebrado no README e em docs/' +
+   (quebrados.length ? ': ' + quebrados.join(', ') : ''));
 
 /* -------------------------------- fim -------------------------------- */
 console.log('');

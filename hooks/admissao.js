@@ -18,7 +18,7 @@ function perguntar(motivo) {
   if (core.CODEX) {
     process.stdout.write(JSON.stringify({ hookSpecificOutput: {
       hookEventName: 'PreToolUse',
-      additionalContext: motivo.replace('Confirma?', 'Consulte cota-codex.js cabe antes da próxima onda e informe a restrição ao usuário.'),
+      additionalContext: motivo.replace('Confirma?', 'Antes da próxima onda, rode o cabe da skill cota-codex e informe a restrição ao usuário.'),
     } }));
     process.exit(0);
   }
@@ -49,7 +49,7 @@ try {
   const nowS = core.agora();
   const j = core.lerJanelas(est, cfg, nowS, core.lerHistorico());
   if (core.CODEX) {
-    const politica = require('../lib/economia-codex').avaliarEconomia(j, cfg);
+    const politica = require('../lib/codex/economia').avaliarEconomia(j, cfg);
     if (politica.iniciar_nova_onda === false) perguntar(politica.mensagem);
   }
 

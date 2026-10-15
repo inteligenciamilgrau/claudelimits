@@ -11,12 +11,25 @@
  *   cota config [c] [v]     mostra ou muda a configuração (D8)
  *   cota limpar             poda histórico velho (D38)
  *   --json                  saída para script
+ *   --codex                 o mesmo, para o Codex em vez do Claude Code
  */
+
+// Tem que vir antes do require do core: é ele que escolhe a pasta de estado
+// (~/.claude/cota ou ~/.codex/cota) pelo provedor.
+if (process.argv.includes('--codex')) process.env.COTA_PROVIDER = 'codex';
 
 const core = require('./lib/core');
 const an = require('./lib/analise');
 const sonda = require('./lib/sonda');
 const produto = core.CODEX ? 'Codex' : 'Claude Code';
+const nomeCmd = core.CODEX ? 'cota --codex' : 'cota';
+// O que só existe no Codex: estimativa por perfil, política de economia e
+// diagnóstico dos hooks. No Claude nada disso é carregado.
+const cx = core.CODEX ? {
+  estimativa: require('./lib/codex/estimativa'),
+  economia: require('./lib/codex/economia'),
+  hooks: require('./lib/codex/hooks'),
+} : null;
 let perfilSelecionado = { modelo: null, esforco: null, velocidade: null };
 
 const C = { r: '\x1b[0m', d: '\x1b[2m', b: '\x1b[1m', cy: '\x1b[36m',
@@ -63,7 +76,7 @@ function ctx(sondar) {
   const janelas = est ? core.lerJanelas(est, cfg, nowS, hist) : null;
   const trechos = core.lerJsonl(core.F.trechos), agentes = core.lerJsonl(core.F.agentes);
   const base = core.CODEX
-    ? require('./lib/estimativa-codex').baseCodex(trechos, agentes, { nowS, perfil: perfilSelecionado,
+    ? cx.estimativa.baseCodex(trechos, agentes, { nowS, perfil: perfilSelecionado,
       meiaVidaDias: cfg.estimativa.meia_vida_dias, maxDias: cfg.estimativa.max_dias })
     : an.base(trechos, agentes);
   return { cfg, est, nowS, hist, janelas, base };
@@ -86,8 +99,8 @@ function relatorioJson() {
     semanal_por_modelo: est.modelos || [],
     ...(core.CODEX ? { provider: 'codex', plano: est.plano, limites: est.limites,
       creditos: est.creditos, resets_disponiveis: est.resets_disponiveis,
-      estimativa: base.metadados, economia: require('./lib/economia-codex').avaliarEconomia(janelas, cfg),
-      hooks: require('./lib/diagnostico-hooks-codex').diagnosticoHooks() } : {}),
+      estimativa: base.metadados, economia: cx.economia.avaliarEconomia(janelas, cfg),
+      hooks: cx.hooks.diagnosticoHooks() } : {}),
     ritmo_por_agente: base.ritmo,
     duracao_por_agente: base.duracao,
   };
@@ -129,7 +142,7 @@ function cmdStatus(json) {
 
   if (!cfg.ligado) {
     say('');
-    say(C.y + 'A ferramenta cota está desativada.' + C.r + C.d + '  (cota on para religar)' + C.r);
+    say(C.y + 'A ferramenta cota está desativada.' + C.r + C.d + '  (' + nomeCmd + ' on para religar)' + C.r);
     say('');
     return 2;
   }
@@ -142,11 +155,16 @@ function cmdStatus(json) {
   say('');
   linhaJanela('7d', janelas.sete, hist, est, 'pct7', 'reset7', true);
   if (core.CODEX) {
-    say('  ' + require('./lib/economia-codex').avaliarEconomia(janelas, cfg).mensagem);
-    say('  Créditos: ' + (est.creditos?.balance ?? 'não informado') +
-      ' · resets disponíveis: ' + (est.resets_disponiveis ?? 'não informado'));
+    // Com folga, a política não tem o que dizer; só fala quando muda o plano.
+    const eco = cx.economia.avaliarEconomia(janelas, cfg);
+    if (!['normal', 'desligada'].includes(eco.nivel)) say('  ' + C.y + eco.mensagem + C.r);
+    const saldo = Number(est.creditos && est.creditos.balance);
+    const extras = [];
+    if (Number.isFinite(saldo) && saldo > 0) extras.push('créditos ' + saldo.toFixed(2));
+    if (est.resets_disponiveis) extras.push('resets guardados: ' + est.resets_disponiveis);
+    if (extras.length) say(C.d + '      ' + extras.join(' · ') + ' (o cota só mostra, nunca usa)' + C.r);
     if (Object.keys(est.limites || {}).some(k => k !== 'codex'))
-      say('  Há limites adicionais: consulte --json. O cabe avalia apenas a cota geral.');
+      say(C.d + '      há limites adicionais: veja --json. O cabe avalia só a cota geral.' + C.r);
   }
   // Sub-limite semanal por modelo: pode estourar antes do agregado. Só da
   // janela viva, senão é número morto.
@@ -212,9 +230,12 @@ function diagnostico(nowS, cfg, est) {
 
 function receita() {
   if (core.CODEX) {
-    say('  Rode node cota-codex.js sondar e codex login status.');
-    say('  Se necessário, defina COTA_CODEX com o caminho absoluto do executável.');
-    say('  Sem leitura válida, trate como SEM DADO. Referência: /status no CLI ou painel de uso.');
+    say('');
+    say(C.b + '  O que fazer:' + C.r);
+    say('  1. Rode ' + C.cy + 'cota --codex sondar' + C.r + ' — tenta de novo e mostra o erro inteiro.');
+    say('  2. Confira o login com ' + C.cy + 'codex login status' + C.r + ' (precisa ser conta ChatGPT).');
+    say('  3. Se o Codex não foi achado, defina ' + C.cy + 'COTA_CODEX' + C.r + ' com o caminho do executável.');
+    say('  4. Enquanto isso, trate a cota como SEM DADO. A referência é o /status do Codex.');
     return;
   }
   say('');
@@ -232,7 +253,7 @@ function semDado() {
   say(C.y + 'Sem leitura da cota.' + C.r + (d.titulo ? '  ' + d.titulo : ''));
   for (const c of d.causas) say(C.d + '  · ' + c + C.r);
   if (d.caso !== 'sonda-nunca-rodou') receita();
-  say(C.d + '  Diagnóstico completo: ' + C.r + 'cota audit');
+  say(C.d + '  Diagnóstico completo: ' + C.r + nomeCmd + ' audit');
   say('');
 }
 
@@ -246,8 +267,8 @@ function cmdCabe(n, tipo, json) {
   const res = an.admissao({ janelas, base, cfg, n, tipo, nowS });
   if (core.CODEX) {
     res.estimativa = base.metadados;
-    res.hooks = require('./lib/diagnostico-hooks-codex').diagnosticoHooks();
-    res.economia = require('./lib/economia-codex').avaliarEconomia(janelas, cfg);
+    res.hooks = cx.hooks.diagnosticoHooks();
+    res.economia = cx.economia.avaliarEconomia(janelas, cfg);
     if (res.economia.iniciar_nova_onda === false) {
       res.veredito_calculo = res.veredito;
       res.quantos_cabem_calculo = res.quantosCabem;
@@ -391,7 +412,7 @@ function cmdAudit(json) {
     ? `${g.r5.toFixed(1)}%/h, ${core.fmtDuracao(g.dur_s)} típicos — ${g.horas.toFixed(1)}h em ${g.trechos} trecho(s)`
     : 'nenhuma ainda — a primeira onda do `cabe` é de calibração');
 
-  const hooks = core.CODEX ? require('./lib/diagnostico-hooks-codex').diagnosticoHooks() : null;
+  const hooks = core.CODEX ? cx.hooks.diagnosticoHooks() : null;
   if (json) { say(JSON.stringify({ achados, sonda: r, ...(core.CODEX ? { hooks, estimativa: base.metadados } : {}) }, null, 2)); return core.CODEX && achados.some(a => !a.ok) ? 1 : 0; }
 
   say('');
@@ -465,7 +486,7 @@ function cmdConfig(caminho, valor) {
       return 1;
     }
     // Limiar fora de 0–100 desliga o aviso sem dizer que desligou.
-    if (/limiar|perguntar_acima_de/.test(ultima) && (convertido < 0 || convertido > 100)) {
+    if (/limiar|_acima_de$/.test(ultima) && (convertido < 0 || convertido > 100)) {
       say(C.v + `${caminho} é um percentual: use 0 a 100 (recebeu ${convertido})` + C.r);
       return 1;
     }
@@ -488,9 +509,9 @@ function cmdConfig(caminho, valor) {
   o[ultima] = convertido;
   if (core.CODEX && partes[0] === 'economia') {
     const e = cfg.economia;
-    if (![e.evitar_ondas_abaixo_pct, e.concluir_abaixo_pct].every(v => Number.isFinite(v) && v >= 0 && v <= 100) ||
-        e.concluir_abaixo_pct > e.evitar_ondas_abaixo_pct) {
-      falhar('CONFIG_INVALIDA', 'Economia: use 0–100 e concluir_abaixo_pct <= evitar_ondas_abaixo_pct.');
+    if (![e.reduzir_acima_de, e.concluir_acima_de].every(v => Number.isFinite(v) && v >= 0 && v <= 100) ||
+        e.concluir_acima_de < e.reduzir_acima_de) {
+      falhar('CONFIG_INVALIDA', 'Economia: use 0–100 e concluir_acima_de >= reduzir_acima_de.');
     }
   }
   core.gravarConfig(cfg);
@@ -574,37 +595,42 @@ function resolver(bruto) {
 }
 
 function ajuda() {
+  const c = s => ('  ' + nomeCmd + (s ? ' ' + s : '')).padEnd(core.CODEX ? 34 : 26);
   say('');
   say('  cota — limites de uso do ' + produto);
   say('');
-  say('  cota                    situação agora');
-  say('  cota cabe 10            a cota aguenta 10 subagentes?');
-  say('  cota cabe 10 Explore    idem, usando o custo médio desse tipo');
-  say('  cota sondar             lê a cota agora, ignorando o cache');
-  say('  cota audit              diagnóstico: onde a corrente quebrou');
-  say('  cota off  |  cota on    desliga / religa a ferramenta');
-  say('  cota config             mostra a configuração');
-  say('  cota limpar             poda histórico velho');
+  say(c('') + 'situação agora');
+  say(c('cabe 10') + 'a cota aguenta 10 subagentes?');
+  say(c('cabe 10 Explore') + 'idem, usando o custo médio desse tipo');
+  say(c('sondar') + 'lê a cota agora, ignorando o cache');
+  say(c('audit') + 'diagnóstico: onde a corrente quebrou');
+  say(c('off') + 'desliga a ferramenta (on religa)');
+  say(c('config') + 'mostra a configuração');
+  say(c('limpar') + 'poda histórico velho');
   if (core.CODEX) say('  --modelo X --esforco Y --velocidade Z  seleciona o perfil da estimativa (omitido = desconhecido)');
+  else say(c('--codex') + 'o mesmo, para o Codex');
   say('');
   say('  Aceita sinônimo (ver, aguenta, debug...) e número solto:');
-  say('  "cota 10" é o mesmo que "cota cabe 10".');
+  say(`  "${nomeCmd} 10" é o mesmo que "${nomeCmd} cabe 10".`);
   say('');
 }
 
 const argv = process.argv.slice(2);
 const json = argv.includes('--json');
-const args = argv.filter(a => a !== '--json');
+const args = argv.filter(a => a !== '--json' && a !== '--codex');
 
+// Codex: de que perfil e com que confiança é a base de custo. Em cinza: é
+// contexto do número, não o número.
 function mostrarQualidade(m) {
   if (!m) return;
-  say('  Perfil: ' + Object.entries(m.perfil).map(([k, v]) => k + '=' + (v || 'desconhecido')).join(' · '));
-  say('  Confiança da base: ' + m.confianca.nivel + ' (heurística) · ' + m.amostras.trechos +
+  const d = s => say(C.d + '  ' + s + C.r);
+  d('perfil: ' + Object.entries(m.perfil).map(([k, v]) => k + '=' + (v || 'desconhecido')).join(' · '));
+  d('confiança da base: ' + m.confianca.nivel + ' (heurística) · ' + m.amostras.trechos +
     ' trecho(s), ' + m.amostras.agentes + ' agente(s), ' + m.amostras.horas.toFixed(2) + 'h observadas');
-  if (m.idade.maisRecenteS !== null) say('  Amostra mais recente: ' + core.fmtDuracao(m.idade.maisRecenteS) + ' atrás');
-  if (m.variabilidade.ritmo5CV !== null) say('  Variação relativa do ritmo: ' + (m.variabilidade.ritmo5CV * 100).toFixed(0) + '%');
-  say('  ' + m.aviso);
-  if (m.perfisDisponiveis?.length > 1) say('  Outros perfis registrados: veja --json e selecione com --modelo/--esforco/--velocidade.');
+  if (m.idade.maisRecenteS !== null) d('amostra mais recente: ' + core.fmtDuracao(m.idade.maisRecenteS) + ' atrás');
+  if (m.variabilidade.ritmo5CV !== null) d('variação relativa do ritmo: ' + (m.variabilidade.ritmo5CV * 100).toFixed(0) + '%');
+  d(m.aviso);
+  if (m.perfisDisponiveis?.length > 1) d('outros perfis registrados: veja --json e selecione com --modelo/--esforco/--velocidade.');
 }
 
 function extrairPerfil() {

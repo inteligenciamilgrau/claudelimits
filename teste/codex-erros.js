@@ -1,4 +1,8 @@
 'use strict';
+/*
+ * teste/codex-erros.js — falhas de verdade (RPC, sistema de arquivos,
+ * argumentos) no modo Codex: todas saem em JSON estável, com código de saída.
+ */
 const assert = require('assert/strict');
 const fs = require('fs');
 const os = require('os');
@@ -14,7 +18,7 @@ require('readline').createInterface({input:process.stdin}).on('line', line => {
 });`);
 let passed = 0;
 function run(args, dir, extra = {}) {
- const r = spawnSync(process.execPath, [path.join(__dirname, 'cota-codex.js'), ...args], {
+ const r = spawnSync(process.execPath, [path.join(__dirname, '..', 'cota.js'), '--codex', ...args], {
   env: {...process.env, COTA_CODEX_DIR:dir, COTA_CODEX:fake, COTA_SONDANDO:'', ...extra},
   encoding:'utf8', windowsHide:true, timeout:15000,
  });

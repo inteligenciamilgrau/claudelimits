@@ -2,6 +2,7 @@
 # Atalho para chamar o cota de qualquer diretório, no Linux e no macOS.
 #   ./cota
 #   ./cota cabe 10
+#   ./cota --codex        (o mesmo, para o Codex)
 # Ponha esta pasta no PATH e vira só "cota".
 #
 # Equivalente POSIX do cota.cmd. A ordem de busca do node é a mesma dos três
@@ -20,6 +21,10 @@ if [ -r "$DIR/node-local.txt" ]; then
 fi
 [ -n "$NODE" ] && [ ! -x "$NODE" ] && NODE=""
 [ -z "$NODE" ] && [ -n "$COTA_NODE" ] && [ -x "$COTA_NODE" ] && NODE="$COTA_NODE"
-[ -z "$NODE" ] && NODE="node"
+[ -z "$NODE" ] && command -v node >/dev/null 2>&1 && NODE="node"
+if [ -z "$NODE" ]; then
+  echo "cota: não achei o Node.js. Rode primeiro:  sh instalar.sh" >&2
+  exit 1
+fi
 
 exec "$NODE" "$DIR/cota.js" "$@"

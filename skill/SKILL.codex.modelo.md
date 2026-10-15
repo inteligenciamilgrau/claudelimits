@@ -48,8 +48,8 @@ com cache de até 60 segundos; `sondar` força atualização. Não há timer em 
 Leia `economia.nivel` e siga a recomendação configurada, mesmo sem base de custo:
 
 - `normal`: prefira uma tarefa por vez e consulte entre etapas.
-- `reduzir`: por padrão, menos de 30% disponíveis em alguma janela; evite novas ondas.
-- `concluir`: por padrão, menos de 15%; conclua o trecho, registre pendências e informe o reset.
+- `reduzir`: por padrão, mais de 70% consumido em alguma janela; evite novas ondas.
+- `concluir`: por padrão, mais de 85% consumido; conclua o trecho, registre pendências e informe o reset.
 - `sem_dado`: não suponha saldo livre; diagnostique antes de nova onda.
 - `desligada`: respeite a escolha do usuário de desativar essa política.
 
@@ -67,7 +67,8 @@ O aviso de admissão é contexto para o agente, não uma tela de confirmação.
 Em orquestração na nuvem os hooks locais podem não rodar: nesse caso use as
 consultas explicitamente e não prometa medição automática.
 O `audit` diferencia configuração de eventos observados. `nao_observada`
-significa que a coleta não foi comprovada; revise `/hooks` numa sessão local.
+significa que a coleta não foi comprovada: peça ao usuário para abrir o Codex
+no terminal, digitar `/hooks` e aprovar os hooks `cota-codex`.
 Mesmo registros de eventos não certificam a origem automática do disparo.
 
 Percentuais exibidos são **consumidos**, não restantes. Leitura `expirada`

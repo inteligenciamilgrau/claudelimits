@@ -1,18 +1,23 @@
 #!/usr/bin/env node
 'use strict';
 /*
- * instalar.js — liga o cota ao Claude Code desta máquina.
+ * instalar.js — liga o cota ao Claude Code e/ou ao Codex desta máquina.
  *
  * Rode com o node que você quer usar:
- *   node instalar.js            instala (ou atualiza) e confere
- *   node instalar.js --remover  desfaz: tira os hooks e a skill
+ *   node instalar.js            instala para o que encontrar (Claude, Codex ou os dois)
+ *   node instalar.js --claude   só o Claude Code      (--codex: só o Codex)
+ *   node instalar.js --remover  desfaz: tira os hooks e as skills
+ *
+ * Sem terminal: INSTALAR.cmd (Windows, dois cliques) ou `sh instalar.sh`
+ * (Linux e macOS) acham o node — ou ajudam a instalar — e chamam este arquivo.
  *
  * O repositório não contém caminho absoluto nenhum, de propósito. Este script
- * descobre os caminhos daqui e escreve as três coisas que precisam deles:
+ * descobre os caminhos daqui e escreve as coisas que precisam deles:
  *
  *   1. node-local.txt          — onde está o node (fica fora do git)
  *   2. ~/.claude/skills/cota/  — a skill, com o comando literal montado
  *   3. ~/.claude/settings.json — os cinco hooks
+ *   4. ~/.codex/...            — o equivalente no Codex (lib/codex/instalar.js)
  *
  * A skill precisa do caminho literal (D27): um agente que nunca viu a
  * ferramenta não deveria ter que substituir placeholder. Por isso o repo
@@ -21,10 +26,19 @@
  * É idempotente: rodar de novo não duplica nada, e corrige o que mudou.
  */
 
+// Antes de qualquer require do projeto: com node velho, o erro de sintaxe
+// de um módulo seria a primeira coisa que um leigo veria.
+if (Number(process.versions.node.split('.')[0]) < 18) {
+  console.error('\n  O cota precisa do Node.js 18 ou mais novo, e este é o ' + process.version + '.');
+  console.error('  Instale a versão LTS em https://nodejs.org e rode de novo.\n');
+  process.exit(1);
+}
+
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { execFileSync } = require('child_process');
+const { comandoHook, barras } = require('./lib/comando');
 
 const DIR = __dirname;
 const NODE = process.execPath;
@@ -44,30 +58,11 @@ const HOOKS = {
   SessionEnd:       { script: 'hooks/medidor.js' },
 };
 
-const barras = p => p.replace(/\\/g, '/');
 const feito = [];
 const pulado = [];
 
-/*
- * O comando que o Claude Code vai executar.
- *
- * No Windows tem que ser `powershell ... -File run.ps1 <script>`: o executável
- * precisa ser um NOME SIMPLES no PATH e o caminho precisa ir como ARGUMENTO.
- * Os dois jeitos óbvios falham, cada um num shell — o cmd.exe lê o "/c" de
- * "/claude-limits" como switch dele, e o bash come as barras invertidas. E os
- * dois falham CALADOS. Fora do Windows não existe esse problema.
- */
-function comando(script) {
-  if (WINDOWS) {
-    // Caminho com espaço ("C:/Users/Ana Maria/...") vai entre aspas, senão o
-    // -File recebe "C:/Users/Ana" e o hook falha CALADO. Aspas duplas valem
-    // igual no cmd.exe e no bash. Sem espaço, fica como sempre foi.
-    const ps1 = barras(path.join(DIR, 'run.ps1'));
-    return 'powershell -NoProfile -ExecutionPolicy Bypass -File ' +
-           (/\s/.test(ps1) ? '"' + ps1 + '"' : ps1) + ' ' + script;
-  }
-  return JSON.stringify(NODE) + ' ' + JSON.stringify(path.join(DIR, script));
-}
+// O comando que o Claude Code vai executar — o porquê do formato está em lib/comando.js.
+const comando = script => comandoHook({ windows: WINDOWS, dir: DIR, node: NODE, pathMod: path }, script);
 
 /*
  * Um hook é do cota pelo SCRIPT que ele chama, não pela pasta do projeto: a
@@ -83,9 +78,8 @@ function lerSettings() {
   if (!fs.existsSync(SETTINGS)) return null;
   try { return JSON.parse(fs.readFileSync(SETTINGS, 'utf8')); }
   catch (e) {
-    console.error('\n  settings.json existe mas não é JSON válido. Nada foi tocado.');
-    console.error('  Conserte o arquivo e rode de novo: ' + SETTINGS + '\n');
-    process.exit(1);
+    throw new Error('settings.json existe mas não é JSON válido. Nada foi tocado. ' +
+                    'Conserte o arquivo e rode de novo: ' + SETTINGS);
   }
 }
 
@@ -100,8 +94,8 @@ const gravarSettings = s => fs.writeFileSync(SETTINGS, JSON.stringify(s, null, 2
  */
 function marcarExecutaveis() {
   if (WINDOWS) return;
-  for (const nome of ['cota', 'cota.js', 'instalar.js', 'teste.js',
-                      'hooks/aviso.js', 'hooks/admissao.js', 'hooks/medidor.js']) {
+  for (const nome of ['cota', 'cota.js', 'instalar.js', 'instalar.sh',
+                      'hooks/aviso.js', 'hooks/admissao.js', 'hooks/medidor.js', 'hooks/codex.js']) {
     const p = path.join(DIR, nome);
     if (!fs.existsSync(p)) continue;
     try {
@@ -269,9 +263,9 @@ function conferir() {
   return { problemas, sondagem };
 }
 
-function instalar() {
-  marcarExecutaveis();
-  gravarNodeLocal();
+// Claude Code. Devolve se a conferência passou; quem fala do próximo passo é o main.
+function instalarClaude() {
+  feito.length = 0; pulado.length = 0;
   instalarSkill();
   instalarSettings();
   limparEstadoLegado();
@@ -279,34 +273,34 @@ function instalar() {
   for (const f of feito)  console.log('  [ok]    ' + f);
   for (const p of pulado) console.log('  [pulei] ' + p);
 
-  console.log('');
   console.log('  conferindo...');
   const { problemas, sondagem } = conferir();
   if (problemas.length) {
-    console.log('');
     for (const p of problemas) console.log('  [FALHA] ' + p);
-    console.log('');
-    console.log('  A instalação escreveu os arquivos, mas a conferência falhou.');
-    console.log('  NÃO conte com a ferramenta até resolver o acima.');
-    console.log('');
-    process.exit(1);
+    return false;
   }
   console.log('  [ok]    o comando da skill executa de verdade');
   console.log('  [ok]    a leitura da cota responde (' + sondagem.ms + 'ms, 5h=' +
               sondagem.pct5 + '% 7d=' + sondagem.pct7 + '%)');
   console.log('          ' + sondagem.exe);
   if (WINDOWS) console.log('  [ok]    o run.ps1 dos hooks responde');
-  console.log('');
-  console.log('  Falta um passo, e ele é obrigatório:');
-  console.log('');
-  console.log('    ABRA UMA SESSÃO NOVA do Claude Code.');
-  console.log('');
-  console.log('  Hooks e skills são lidos na inicialização — a sessão atual, se');
-  console.log('  houver, continua sem eles.');
-  console.log('');
-  console.log('  Para conferir depois:  ' + (WINDOWS ? 'cota.cmd' : './cota') + ' audit');
-  console.log('  Para desfazer:         node instalar.js --remover');
-  console.log('');
+  return true;
+}
+
+function instalarCodex() {
+  const codex = require('./lib/codex/instalar');
+  codex.instalar({ dir: DIR, node: NODE, log: l => console.log('  ' + l) });
+  console.log('  conferindo...');
+  const { problemas, sondagem } = codex.conferir({ dir: DIR, node: NODE });
+  if (problemas.length) {
+    for (const p of problemas) console.log('  [FALHA] ' + p);
+    return false;
+  }
+  console.log('  [ok]    o comando dos hooks executa de verdade');
+  console.log('  [ok]    a leitura do saldo responde (' + sondagem.ms + 'ms, 5h=' +
+              sondagem.pct5 + '% 7d=' + sondagem.pct7 + '%)');
+  console.log('          ' + sondagem.exe);
+  return true;
 }
 
 /* ------------------------------- remover ------------------------------- */
@@ -317,7 +311,8 @@ function instalar() {
  * ficam intactos. O estado (~/.claude/cota) fica — é seu histórico, e apagar
  * é uma decisão sua.
  */
-function remover() {
+function removerClaude() {
+  feito.length = 0; pulado.length = 0;
   const s = lerSettings();
   if (s) {
     fs.copyFileSync(SETTINGS, SETTINGS + '.bak-cota-remover');
@@ -347,19 +342,117 @@ function remover() {
 
   for (const f of feito)  console.log('  [removido] ' + f);
   for (const p of pulado) console.log('  [pulei]    ' + p);
-  console.log('');
   console.log('  O histórico continua em ' + ESTADO + ' — apague a pasta se quiser.');
-  console.log('  Abra uma sessão nova para os hooks pararem de rodar.');
-  console.log('');
+  return true;
+}
+
+function removerCodex() {
+  const codex = require('./lib/codex/instalar');
+  codex.remover({ log: l => console.log('  ' + l) });
+  console.log('  O histórico continua em ' + path.join(codex.caminhos().raiz, 'cota') +
+              ' — apague a pasta se quiser.');
+  return true;
 }
 
 /* -------------------------------- main -------------------------------- */
 
-const removendo = process.argv.includes('--remover');
+const argv = process.argv.slice(2);
+const removendo = argv.includes('--remover');
+const pedido = { claude: argv.includes('--claude'), codex: argv.includes('--codex') };
+const explicito = pedido.claude || pedido.codex;
+const ALVOS = {
+  claude: { nome: 'Claude Code', instalar: instalarClaude, remover: removerClaude,
+            achar: () => require('./lib/sonda').acharClaude() },
+  codex:  { nome: 'Codex', instalar: instalarCodex, remover: removerCodex,
+            achar: () => require('./lib/codex/sonda').candidatos()[0] || null },
+};
+
+const secao = t => console.log('\n  ── ' + t + ' ' + '─'.repeat(Math.max(3, 44 - t.length)));
+
 console.log('');
 console.log('  cota — ' + (removendo ? 'remoção' : 'instalação'));
-console.log('  node:    ' + NODE);
-console.log('  projeto: ' + DIR);
-console.log('  destino: ' + CLAUDE);
+
+/*
+ * Aberto de dentro do .zip, o Windows extrai para uma pasta temporária e os
+ * hooks ficariam apontando para algo que some sozinho. Melhor parar aqui.
+ */
+if (/[\\/]Temp\d*_[^\\/]*\.zip[\\/]/i.test(DIR)) {
+  console.log('');
+  console.log('  Parece que o instalador foi aberto de dentro do arquivo .zip.');
+  console.log('  Extraia o .zip primeiro (botão direito → "Extrair tudo") numa pasta');
+  console.log('  que vai ficar — por exemplo Documentos\\cota — e rode de lá.');
+  console.log('');
+  process.exit(1);
+}
+
+// Sem flag, instala para o que existir na máquina; removendo, tira de todos.
+const alvos = Object.keys(ALVOS).filter(k => explicito ? pedido[k] : (removendo || !!ALVOS[k].achar()));
+if (!alvos.length) {
+  console.log('');
+  console.log('  Não encontrei o Claude Code nem o Codex nesta máquina.');
+  console.log('  Instale um deles (a extensão do VS Code serve), faça login uma vez,');
+  console.log('  e rode o instalador de novo.');
+  console.log('');
+  process.exit(1);
+}
+
+console.log('  para:    ' + alvos.map(k => ALVOS[k].nome).join(' e '));
+console.log('  node:    ' + NODE + ' (' + process.version + ')');
+console.log('  pasta:   ' + DIR);
+if (!removendo) {
+  feito.length = 0; pulado.length = 0;
+  marcarExecutaveis();
+  gravarNodeLocal();
+  for (const f of feito) console.log('  [ok]    ' + f);
+}
+
+const resultado = {};
+for (const k of alvos) {
+  secao(ALVOS[k].nome);
+  try { resultado[k] = removendo ? ALVOS[k].remover() : ALVOS[k].instalar(); }
+  catch (e) { console.log('  [FALHA] ' + ((e && e.message) || e)); resultado[k] = false; }
+}
+
+const falhou = alvos.filter(k => !resultado[k]);
+secao(falhou.length ? 'Atenção' : 'Pronto');
+if (removendo) {
+  console.log('  Abra uma conversa nova para os hooks pararem de rodar.');
+} else {
+  for (const k of falhou) {
+    console.log('  ' + ALVOS[k].nome + ': os arquivos foram gravados, mas a conferência falhou.');
+    console.log('  NÃO conte com a ferramenta nele até resolver o [FALHA] acima.');
+    console.log('');
+  }
+  if (falhou.length < alvos.length) {
+    console.log('  Falta só:');
+    if (resultado.claude) {
+      console.log('');
+      console.log('  • Claude Code: abra uma conversa nova (ou recarregue o VS Code).');
+      console.log('    Hooks e skills só são lidos quando a conversa começa.');
+    }
+    if (resultado.codex) {
+      // Quem usa só a extensão não tem `codex` no PATH: dá o caminho inteiro.
+      const exe = ALVOS.codex.achar();
+      const noPath = !exe || (process.env.PATH || process.env.Path || '').split(path.delimiter)
+        .some(d => path.isAbsolute(d) && path.dirname(exe) === path.resolve(d));
+      // Pronto para colar: no PowerShell um caminho entre aspas precisa do `&`.
+      const rodar = noPath ? 'codex' : (WINDOWS ? '& ' : '') + '"' + exe + '"';
+      console.log('');
+      console.log('  • Codex: aprovar os hooks. O Codex não roda hook que você não aprovou,');
+      console.log('    e a aprovação é feita no Codex do terminal:');
+      console.log('      1. abra um terminal e rode:  ' + rodar);
+      console.log('      2. digite /hooks e aprove os 5 hooks "cota-codex"');
+      console.log('    Depois abra uma conversa nova. Sem aprovar, a consulta da cota');
+      console.log('    funciona, mas a medição dos subagentes não.');
+    }
+    console.log('');
+    console.log('  Não apague nem mova esta pasta — a ferramenta roda daqui:');
+    console.log('    ' + DIR);
+    console.log('  (se mover, é só rodar o instalador de novo)');
+    console.log('');
+    console.log('  Para testar, pergunte ao agente: "quanto da minha cota eu já usei?"');
+    console.log('  Para desfazer: node instalar.js --remover');
+  }
+}
 console.log('');
-if (removendo) remover(); else instalar();
+process.exit(falhou.length ? 1 : 0);

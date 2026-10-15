@@ -475,6 +475,43 @@ o teste verifica. O modelo de ameaça que sobra é honesto: quase tudo pressupõ
 que quem escreve em `~/.claude/` é você. Quem não é você e escreve ali já tem
 sua sessão do Claude Code.
 
+## Codex e instalação para leigos
+
+**D49 — O Codex é um provedor, não outro programa.** O mesmo `cota.js`, os
+mesmos hooks e o mesmo laço de sonda; o que é só do Codex mora em `lib/codex/`
+(leitura pelo app-server, estimativa por perfil, economia, instalador) e é
+ligado por `--codex` na linha de comando ou pelo `hooks/codex.js`. Começou com
+três atalhos `cota-codex*` e um instalador separado na raiz; sumiram, porque
+cada arquivo a mais na raiz é uma pergunta "qual eu rodo?" para quem chega.
+Detalhes em [codex.md](codex.md).
+
+**D50 — Um instalador, que descobre o que existe.** `node instalar.js` procura
+o Claude Code e o Codex e instala para os que achar (`--claude`/`--codex`
+restringem). Para quem não usa terminal: `INSTALAR.cmd` (dois cliques) e
+`instalar.sh`, que só fazem a parte que um leigo não deveria fazer na mão —
+achar um node 18+ fora do PATH, ou oferecer instalar pelo `winget` — e chamam
+o `instalar.js`. O resumo final diz o que falta, e para de vez se o instalador
+foi aberto de dentro do .zip (a pasta temporária some, e os hooks junto).
+
+**D51 — No Codex o hook também passa pelo `run.ps1`.** A primeira versão
+gravava `powershell -EncodedCommand <base64>`: funcionava, mas o Codex pede
+que o usuário revise e aprove cada hook em `/hooks`, e ninguém consegue
+revisar base64. O formato que os hooks do Claude já usavam funciona em cmd,
+PowerShell e bash (testado nos três, em caminho com espaço e acento) e é legível.
+
+**D52 — Todo percentual é consumido.** A economia do Codex nasceu em %
+restante (`evitar_ondas_abaixo_pct 30`), ao lado de uma barra em % consumido —
+na mesma tela, "60%" e "40% disponível". Virou `reduzir_acima_de 70` e
+`concluir_acima_de 85`, com o mesmo corte; as chaves antigas são convertidas
+ao ler a configuração.
+
+**D53 — O `node-local.txt` é UTF-8, e quem lê tem que saber.** O PowerShell 5.1
+lê arquivo sem BOM como ANSI: com um nome de usuário com acento
+(`C:\Users\Ana Conceição`), o caminho do node virava lixo e o hook caía no `node` do
+PATH — ou, sem ele, falhava calado. O `run.ps1` lê com `-Encoding UTF8`.
+(Achado do teste novo: o `fs.cpSync` do Node 22 no Windows também estraga
+pasta com acento, por isso os testes copiam à mão.)
+
 ## Fora de escopo
 
 - API interna da Anthropic, token de credencial.
