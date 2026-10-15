@@ -1,0 +1,10 @@
+#!/bin/sh
+TASK_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+COTA_RUNTIME=""
+if [ -r "$TASK_DIR/node-local.txt" ]; then
+  COTA_RUNTIME=$(head -n 1 "$TASK_DIR/node-local.txt" | tr -d '\r\n')
+fi
+[ -n "$COTA_RUNTIME" ] && [ ! -x "$COTA_RUNTIME" ] && COTA_RUNTIME=""
+[ -z "$COTA_RUNTIME" ] && [ -n "$COTA_NODE" ] && COTA_RUNTIME="$COTA_NODE"
+[ -z "$COTA_RUNTIME" ] && COTA_RUNTIME="node"
+exec "$COTA_RUNTIME" "$TASK_DIR/cota-codex.js" "$@"

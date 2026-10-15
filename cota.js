@@ -16,11 +16,18 @@
 const core = require('./lib/core');
 const an = require('./lib/analise');
 const sonda = require('./lib/sonda');
+const produto = core.CODEX ? 'Codex' : 'Claude Code';
+let perfilSelecionado = { modelo: null, esforco: null, velocidade: null };
 
 const C = { r: '\x1b[0m', d: '\x1b[2m', b: '\x1b[1m', cy: '\x1b[36m',
             g: '\x1b[32m', y: '\x1b[33m', v: '\x1b[31m' };
 
-const say = s => console.log(s === undefined ? '' : s);
+const jsonCodex = core.CODEX && process.argv.includes('--json');
+const mensagens = [];
+const say = s => jsonCodex ? mensagens.push(s === undefined ? '' : String(s)) : console.log(s === undefined ? '' : s);
+function falhar(codigo, mensagem) {
+  throw Object.assign(new Error(mensagem), { code: codigo });
+}
 
 function barra(p, w) {
   w = w || 18;
@@ -38,13 +45,27 @@ function barra(p, w) {
 function ctx(sondar) {
   const cfg = core.lerConfig();
   if (sondar !== false && cfg.ligado) {
-    try { sonda.garantirFresco(cfg.sonda.idade_s); } catch (_) {}
+    try {
+      const r = sonda.garantirFresco(cfg.sonda.idade_s);
+      if (core.CODEX && (r.ok === false || /falhou/.test(r.motivo || ''))) {
+        const ultimo = core.lerJson(core.F.sonda, {});
+        falhar('SONDA_FALHOU', r.erro || ultimo.erro || r.motivo);
+      }
+    } catch (e) { if (core.CODEX) throw e; }
   }
   const est = core.lerEstado();
+  if (core.CODEX && sondar !== false) {
+    if (!cfg.ligado) falhar('DESATIVADA', 'A ferramenta cota está desativada.');
+    if (!est) falhar('SEM_DADO', 'Sem leitura gravada da cota.');
+  }
   const nowS = core.agora();
   const hist = core.lerHistorico();
   const janelas = est ? core.lerJanelas(est, cfg, nowS, hist) : null;
-  const base = an.base(core.lerJsonl(core.F.trechos), core.lerJsonl(core.F.agentes));
+  const trechos = core.lerJsonl(core.F.trechos), agentes = core.lerJsonl(core.F.agentes);
+  const base = core.CODEX
+    ? require('./lib/estimativa-codex').baseCodex(trechos, agentes, { nowS, perfil: perfilSelecionado,
+      meiaVidaDias: cfg.estimativa.meia_vida_dias, maxDias: cfg.estimativa.max_dias })
+    : an.base(trechos, agentes);
   return { cfg, est, nowS, hist, janelas, base };
 }
 
@@ -63,6 +84,9 @@ function relatorioJson() {
     sete_dias: Object.assign({}, janelas.sete,
       { ritmo_pct_hora: r7.pctPorHora, ritmo_medido_h: r7.deltaHoras }),
     semanal_por_modelo: est.modelos || [],
+    ...(core.CODEX ? { provider: 'codex', plano: est.plano, limites: est.limites,
+      creditos: est.creditos, resets_disponiveis: est.resets_disponiveis,
+      estimativa: base.metadados, hooks: require('./lib/diagnostico-hooks-codex').diagnosticoHooks() } : {}),
     ritmo_por_agente: base.ritmo,
     duracao_por_agente: base.duracao,
   };
@@ -111,11 +135,17 @@ function cmdStatus(json) {
   if (!est) { semDado(); return 1; }
 
   say('');
-  say(C.cy + C.b + 'cota' + C.r + C.d + '  — limites de uso do Claude Code' + C.r);
+  say(C.cy + C.b + 'cota' + C.r + C.d + '  — limites de uso do ' + produto + C.r);
   say('');
   linhaJanela('5h', janelas.cinco, hist, est, 'pct5', 'reset5', false);
   say('');
   linhaJanela('7d', janelas.sete, hist, est, 'pct7', 'reset7', true);
+  if (core.CODEX) {
+    say('  Créditos: ' + (est.creditos?.balance ?? 'não informado') +
+      ' · resets disponíveis: ' + (est.resets_disponiveis ?? 'não informado'));
+    if (Object.keys(est.limites || {}).some(k => k !== 'codex'))
+      say('  Há limites adicionais: consulte --json. O cabe avalia apenas a cota geral.');
+  }
   // Sub-limite semanal por modelo: pode estourar antes do agregado. Só da
   // janela viva, senão é número morto.
   const modelos = (est.modelos || []).filter(m => m.reset === null || m.reset > nowS);
@@ -138,6 +168,7 @@ function cmdStatus(json) {
            `${C.d}(${m.horas.toFixed(1)}h medidas, ${m.agentes} agente(s))${C.r}`;
   };
   const geral = linhaBase('__geral');
+  if (core.CODEX) mostrarQualidade(base.metadados);
   if (geral) {
     const tipos = Object.keys(base.ritmo).filter(k => k !== '__geral').map(linhaBase).filter(Boolean);
     say(C.d + '  por subagente: ' + C.r + geral + (tipos.length ? C.d + '  ·  ' + C.r + tipos.join(C.d + ' · ' + C.r) : ''));
@@ -178,6 +209,12 @@ function diagnostico(nowS, cfg, est) {
 }
 
 function receita() {
+  if (core.CODEX) {
+    say('  Rode node cota-codex.js sondar e codex login status.');
+    say('  Se necessário, defina COTA_CODEX com o caminho absoluto do executável.');
+    say('  Sem leitura válida, trate como SEM DADO. Referência: /status no CLI ou painel de uso.');
+    return;
+  }
   say('');
   say(C.b + '  O que fazer:' + C.r);
   say('  1. Rode ' + C.cy + 'cota sondar' + C.r + ' — tenta de novo e mostra o erro inteiro.');
@@ -205,6 +242,10 @@ function cmdCabe(n, tipo, json) {
   if (!est) { semDado(); return 1; }
 
   const res = an.admissao({ janelas, base, cfg, n, tipo, nowS });
+  if (core.CODEX) {
+    res.estimativa = base.metadados;
+    res.hooks = require('./lib/diagnostico-hooks-codex').diagnosticoHooks();
+  }
   if (json) { say(JSON.stringify(res, null, 2)); return 0; }
 
   const rot = {
@@ -219,6 +260,7 @@ function cmdCabe(n, tipo, json) {
   say(`${C.b}cabem ${n} subagente(s)${tipo ? ' do tipo ' + tipo : ''}?${C.r}   →   ${rot}`);
   say('');
   say('  ' + res.motivo);
+  if (core.CODEX) mostrarQualidade(base.metadados);
   if (res.janelaCritica) say(C.d + '  janela crítica: ' + C.r + res.janelaCritica);
   if (res.quantosCabem !== null) {
     say(C.d + '  cabem agora: ' + C.r + res.quantosCabem + ' subagente(s)');
@@ -269,7 +311,7 @@ function trocaDoClaude(r, nowS) {
 // "tenta de novo" deliberado.
 function cmdSondar(json) {
   const r = sonda.sondar({});
-  if (json) { say(JSON.stringify(r, null, 2)); return 0; }
+  if (json) { say(JSON.stringify(r, null, 2)); return core.CODEX && !r.ok ? 1 : 0; }
   const nowS = core.agora();
   say('');
   if (r.ok) {
@@ -285,7 +327,7 @@ function cmdSondar(json) {
   say(C.d + '  executável: ' + (r.exe || 'nenhum encontrado') + C.r);
   receita();
   say('');
-  return 0;
+  return core.CODEX ? 1 : 0;
 }
 
 /* -------------------------------- audit -------------------------------- */
@@ -301,10 +343,10 @@ function cmdAudit(json) {
   const achados = [];
   const add = (ok, titulo, detalhe) => achados.push({ ok, titulo, detalhe });
 
-  add(!!r.exe, 'executável do claude encontrado', r.exe
+  add(!!r.exe, 'executável do ' + (core.CODEX ? 'Codex' : 'claude') + ' encontrado', r.exe
     ? sonda.rotuloExe(r.exe) + (trocaDoClaude(r, nowS) || '')
-    : 'nem no PATH, nem em ~/.local/bin, nem na extensão do VS Code — defina COTA_CLAUDE');
-  add(r.ok, 'a leitura da cota (get_usage) respondeu', r.ok
+    : 'nem no PATH, nem em ~/.local/bin, nem na extensão do VS Code — defina ' + (core.CODEX ? 'COTA_CODEX' : 'COTA_CLAUDE'));
+  add(r.ok, 'a leitura da cota (' + (core.CODEX ? 'account/rateLimits/read' : 'get_usage') + ') respondeu', r.ok
     ? `${r.ms}ms` + (r.plano ? `, plano ${r.plano}` : '') + `, 5h=${r.pct5}% 7d=${r.pct7}%`
     : r.erro);
 
@@ -336,7 +378,8 @@ function cmdAudit(json) {
     ? `${g.r5.toFixed(1)}%/h, ${core.fmtDuracao(g.dur_s)} típicos — ${g.horas.toFixed(1)}h em ${g.trechos} trecho(s)`
     : 'nenhuma ainda — a primeira onda do `cabe` é de calibração');
 
-  if (json) { say(JSON.stringify({ achados, sonda: r }, null, 2)); return 0; }
+  const hooks = core.CODEX ? require('./lib/diagnostico-hooks-codex').diagnosticoHooks() : null;
+  if (json) { say(JSON.stringify({ achados, sonda: r, ...(core.CODEX ? { hooks, estimativa: base.metadados } : {}) }, null, 2)); return core.CODEX && achados.some(a => !a.ok) ? 1 : 0; }
 
   say('');
   say(C.cy + C.b + 'cota audit' + C.r + C.d + '  — em que elo a corrente quebrou' + C.r);
@@ -348,6 +391,11 @@ function cmdAudit(json) {
         (a.detalhe ? C.d + '  — ' + a.detalhe + C.r : ''));
   }
   if (!r.ok) receita();
+  if (hooks) {
+    say('  Hooks: ' + (hooks.instalado ? 'instalados' : 'instalação incompleta') + ' · coleta: ' + hooks.coleta);
+    say('  ' + hooks.aviso);
+    if (hooks.ultimo_erro) say('  Última falha do hook: ' + hooks.ultimo_erro.codigo);
+  }
   say('');
   say(falhas === 0 ? C.g + '  nenhuma falha' + C.r : C.v + `  ${falhas} falha(s)` + C.r);
   say('');
@@ -410,6 +458,10 @@ function cmdConfig(caminho, valor) {
     }
     if (/_min$|_s$|orfao|dias|linhas/.test(ultima) && convertido < 0) {
       say(C.v + `${caminho} não pode ser negativo` + C.r);
+      return 1;
+    }
+    if (partes[0] === 'estimativa' && convertido <= 0) {
+      say(C.v + `${caminho} deve ser maior que zero` + C.r);
       return 1;
     }
     if (ultima === 'margem' && (convertido <= 0 || convertido > 1)) {
@@ -503,7 +555,7 @@ function resolver(bruto) {
 
 function ajuda() {
   say('');
-  say('  cota — limites de uso do Claude Code');
+  say('  cota — limites de uso do ' + produto);
   say('');
   say('  cota                    situação agora');
   say('  cota cabe 10            a cota aguenta 10 subagentes?');
@@ -513,6 +565,7 @@ function ajuda() {
   say('  cota off  |  cota on    desliga / religa a ferramenta');
   say('  cota config             mostra a configuração');
   say('  cota limpar             poda histórico velho');
+  if (core.CODEX) say('  --modelo X --esforco Y --velocidade Z  seleciona o perfil da estimativa (omitido = desconhecido)');
   say('');
   say('  Aceita sinônimo (ver, aguenta, debug...) e número solto:');
   say('  "cota 10" é o mesmo que "cota cabe 10".');
@@ -523,8 +576,33 @@ const argv = process.argv.slice(2);
 const json = argv.includes('--json');
 const args = argv.filter(a => a !== '--json');
 
+function mostrarQualidade(m) {
+  if (!m) return;
+  say('  Perfil: ' + Object.entries(m.perfil).map(([k, v]) => k + '=' + (v || 'desconhecido')).join(' · '));
+  say('  Confiança da base: ' + m.confianca.nivel + ' (heurística) · ' + m.amostras.trechos +
+    ' trecho(s), ' + m.amostras.agentes + ' agente(s), ' + m.amostras.horas.toFixed(2) + 'h observadas');
+  if (m.idade.maisRecenteS !== null) say('  Amostra mais recente: ' + core.fmtDuracao(m.idade.maisRecenteS) + ' atrás');
+  if (m.variabilidade.ritmo5CV !== null) say('  Variação relativa do ritmo: ' + (m.variabilidade.ritmo5CV * 100).toFixed(0) + '%');
+  say('  ' + m.aviso);
+  if (m.perfisDisponiveis?.length > 1) say('  Outros perfis registrados: veja --json e selecione com --modelo/--esforco/--velocidade.');
+}
+
+function extrairPerfil() {
+  if (!core.CODEX) return;
+  for (let i = 0; i < args.length; i++) {
+    const m = args[i].match(/^--(modelo|esforco|velocidade)(?:=(.*))?$/);
+    if (!m) continue;
+    const separado = m[2] === undefined;
+    const valor = separado ? args[i + 1] : m[2];
+    if (!valor || !valor.trim() || valor.startsWith('--')) falhar('ARGUMENTO_INVALIDO', 'Falta valor para --' + m[1]);
+    perfilSelecionado[m[1]] = valor.trim();
+    args.splice(i, separado ? 2 : 1); i--;
+  }
+}
+
 let code = 0;
 try {
+  extrairPerfil();
   const cmd = resolver(args[0]);
 
   if (cmd === 'ajuda') { ajuda(); code = 0; }
@@ -534,6 +612,7 @@ try {
     // situação, para a resposta nunca ser inútil.
     const n = Number(args[1]);
     if (!Number.isFinite(n) || n < 1) {
+      if (core.CODEX) falhar('ARGUMENTO_INVALIDO', 'Informe o número de agentes: cota cabe 10.');
       say('(faltou o número de agentes — ex.: cota cabe 10. Situação atual:)');
       say('');
       code = cmdStatus(json);
@@ -549,6 +628,7 @@ try {
   else if (cmd === 'config') code = cmdConfig(args[1], args[2]);
   else if (cmd === 'limpar') code = cmdLimpar(args[1], args[2]);
   else {
+    if (core.CODEX) falhar('COMANDO_INVALIDO', 'Comando desconhecido: ' + args[0]);
     // Desconhecido: mostra a situação assim mesmo. Sair com erro faria o
     // agente desistir da ferramenta por causa de uma digitação.
     say('(não conheço "' + args[0] + '". Situação atual:)');
@@ -557,10 +637,37 @@ try {
     ajuda();
   }
 } catch (e) {
+  if (core.CODEX) {
+    const codigo = String(e.code || 'ERRO_INTERNO');
+    const mensagem = String(e.message || e);
+    const acao = /^(EPERM|EACCES)$/.test(codigo)
+      ? 'Verifique a permissão de escrita no cache e as restrições do sandbox. COTA_CODEX_DIR permite escolher outra pasta de cache.'
+      : 'Rode cota audit para o diagnóstico. Trate como SEM DADO por enquanto.';
+    if (json) { mensagens.length = 0; say(JSON.stringify({ ok: false, provider: 'codex', erro: { codigo, mensagem, acao } })); }
+    else { say('cota: ' + codigo + ': ' + mensagem); say(acao); }
+    code = codigo === 'DESATIVADA' ? 2 : 1;
+  } else {
   // Nunca estoura na cara de quem chamou: um traceback faria o agente
   // concluir "ferramenta quebrada" e seguir sem checar a cota.
   say('cota: falhou aqui dentro — ' + String((e && e.message) || e));
   say('Rode `cota audit` para o diagnóstico. Trate como SEM DADO por enquanto.');
   code = 0;
+  }
+}
+if (jsonCodex) {
+  const texto = mensagens.join('\n').replace(/\x1b\[[0-9;]*m/g, '');
+  let resultado;
+  try { resultado = JSON.parse(texto); }
+  catch (_) { resultado = code ? { ok: false, provider: 'codex', erro: { codigo: 'COMANDO_FALHOU', mensagem: texto.trim() } } : { ok: true, provider: 'codex', resultado: texto.trim() }; }
+  // Preserve the successful command payloads; all failures expose a stable code.
+  if (code && resultado && typeof resultado === 'object' && !Array.isArray(resultado)) {
+    resultado.ok = false;
+    resultado.provider = 'codex';
+    if (!resultado.erro || typeof resultado.erro !== 'object') resultado.erro = {
+      codigo: resultado.achados ? 'AUDIT_FALHOU' : 'SONDA_FALHOU',
+      mensagem: resultado.erro || 'O diagnóstico encontrou falhas.',
+    };
+  }
+  console.log(JSON.stringify(resultado, null, 2));
 }
 process.exit(code);

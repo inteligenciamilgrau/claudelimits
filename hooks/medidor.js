@@ -44,6 +44,7 @@ const VOO = core.F.emVoo;
 const FIM = core.F.terminados;
 
 function lerStdin() {
+  if (core.CODEX && Object.prototype.hasOwnProperty.call(core, 'eventoHook')) return core.eventoHook;
   try { return JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) { return null; }
 }
 
@@ -88,6 +89,8 @@ function descartarTudo() {
  *   null   o registro não diz (não está lá, ou o formato mudou)
  */
 function sessaoViva(sessionId) {
+  // Codex has no Claude-style PID registry. SessionEnd + age fallback only.
+  if (core.CODEX) return null;
   if (!sessionId) return null;
   let nomes = [];
   try { nomes = fs.readdirSync(core.F.sessoesClaude).filter(n => /^\d+\.json$/.test(n)); }
@@ -133,7 +136,8 @@ function limparOrfaos(cfg, encerrada) {
   if (!removidos || emVoo().length || fechandoAgora()) return;
   // O céu esvaziou com a saída deles. O tempo de quem já tinha terminado
   // ainda vale como amostra: fecha o trecho. Sem ninguém, acaba ali.
-  if (listar(FIM).length && fs.existsSync(core.F.marco)) fecharTrecho(cfg);
+  if (core.CODEX && encerrada) descartarTudo();
+  else if (listar(FIM).length && fs.existsSync(core.F.marco)) fecharTrecho(cfg);
   else descartarTudo();
 }
 
@@ -143,6 +147,7 @@ function inicio(ev, cfg) {
   const agora = Date.now();
   core.gravarJson(arq(VOO, ev.agent_id), {
     tipo: ev.agent_type || null, sessao: ev.session_id || null, t0_ms: agora,
+    ...(core.CODEX ? { perfil: require('../lib/perfil-codex').perfilDoEvento(ev), origem: 'hook' } : {}),
   });
 
   /*
@@ -160,6 +165,7 @@ function inicio(ev, cfg) {
     fs.writeFileSync(core.F.marco, JSON.stringify({
       t_ms: core.tMs(est), pct5: est.pct5, pct7: est.pct7,
       reset5: est.reset5, reset7: est.reset7,
+      accountId: est.accountId, plano: est.plano,
     }, null, 2), { flag: 'wx' });
   } catch (_) { /* outro abriu primeiro: correto, segue */ }
 }
@@ -169,12 +175,22 @@ function inicio(ev, cfg) {
 function fim(ev, cfg) {
   const meu = core.lerJson(arq(VOO, ev.agent_id), null);
   if (!meu) return;
+  if (core.CODEX) {
+    const { normalizarPerfil, perfilDoEvento } = require('../lib/perfil-codex');
+    const inicial = normalizarPerfil(meu.perfil), final = perfilDoEvento(ev);
+    // Missing stop metadata says nothing; newly supplied or changed metadata
+    // cannot be attributed retroactively to the whole interval.
+    meu.misto = Object.keys(final).some(k => final[k] !== null && final[k] !== inicial[k]);
+    if (meu.misto) meu.perfil_final = final;
+  }
   const t1 = Date.now();
   // A duração dele, para a admissão saber quanto um subagente costuma rodar.
   // Não depende de leitura nenhuma: o início e o fim são dos hooks.
   core.appendJsonl(core.F.agentes, {
     t: core.agora(), tipo: meu.tipo || null, sessao: meu.sessao || null,
     dur_s: Math.round((t1 - t0De(meu)) / 1000),
+    ...(core.CODEX ? { perfil: meu.perfil || null, misto: !!meu.misto,
+      origem: meu.origem || 'desconhecida' } : {}),
   });
   // Grava o fim antes de sair do céu: em nenhum instante ele some dos dois.
   core.gravarJson(arq(FIM, ev.agent_id), Object.assign({}, meu, { t1_ms: t1 }));
@@ -214,6 +230,9 @@ function fecharTrecho(cfg) {
     sonda.garantirFrescoHook(0, { depoisDeMs: tFim });
     const est = core.lerEstado();
 
+    if (core.CODEX && marco && est && (marco.accountId !== est.accountId || marco.plano !== est.plano)) {
+      apagar(meu); descartarTudo(); return;
+    }
     if (!marco || !est || core.tMs(est) < tFim) {
       // Sem leitura nova. Ainda há gente: devolve o marco, e o próximo fecha
       // um trecho maior. Ninguém mais: o trecho acaba sem medida — um Δ de
@@ -232,6 +251,7 @@ function fecharTrecho(cfg) {
         fs.writeFileSync(core.F.marco, JSON.stringify({
           t_ms: core.tMs(est), pct5: est.pct5, pct7: est.pct7,
           reset5: est.reset5, reset7: est.reset7,
+          accountId: est.accountId, plano: est.plano,
         }, null, 2), { flag: 'wx' });
       } catch (_) {}
     }
@@ -266,10 +286,24 @@ function registrarTrecho(marco, est, tFim) {
     core.num(marco[p]) !== null && est[p] >= marco[p] ? est[p] - marco[p] : null);
   const d5 = delta('pct5', 'reset5'), d7 = delta('pct7', 'reset7');
 
+  let metadados = {};
+  if (core.CODEX) {
+    const { normalizarPerfil, chavePerfil } = require('../lib/perfil-codex');
+    const perfis = new Map();
+    for (const parte of partes) if (tempo(parte) > 0)
+      perfis.set(chavePerfil(parte.perfil), normalizarPerfil(parte.perfil));
+    const misto = perfis.size !== 1 || partes.some(p => tempo(p) > 0 && p.misto);
+    metadados = { perfil: misto ? null : [...perfis.values()][0], misto,
+      perfis: [...perfis.values()], atribuicao: 'coletiva_conta',
+      sessoes_observadas: new Set(partes.map(p => p.sessao).filter(Boolean)).size,
+      inclui_conversa_principal: true, interferencia_externa: 'nao_observavel', origem: 'hook' };
+  }
+
   core.appendJsonl(core.F.trechos, {
     t: core.agora(), dur_s: Math.round((tFim - ini) / 1000),
     d5, d7, valido5: d5 !== null, valido7: d7 !== null,
     seg: Math.round(seg), por_tipo: porTipo, agentes: partes.length,
+    ...metadados,
   });
   for (const e of fim) apagar(e.arquivo);
 }
@@ -347,8 +381,15 @@ try {
       // acabou de ser contabilizado, não o estado anterior a ele.
       const est = core.lerEstado();
       const msg = est && vigiar(cfg, est, core.agora());
-      if (msg) process.stdout.write(JSON.stringify({ systemMessage: msg }));
+      if (msg || core.CODEX) process.stdout.write(JSON.stringify(msg ? { systemMessage: msg } : {}));
     }
   }
-} catch (_) { /* medir nunca pode atrapalhar o trabalho */ }
+} catch (e) {
+  if (core.CODEX) {
+    const erro = { t: core.agora(), evento: core.eventoHook?.hook_event_name || null,
+      codigo: e.code || 'ERRO_HOOK', mensagem: String(e.message || e).slice(0, 500) };
+    try { core.gravarJson(core.F.hookErro, erro); } catch (_) {}
+    process.stderr.write('[cota-codex] Medição falhou: ' + erro.codigo + '\n');
+  }
+}
 process.exit(0);

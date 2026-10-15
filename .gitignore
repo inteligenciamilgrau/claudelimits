@@ -22,6 +22,8 @@ agentes.jsonl
 trechos.jsonl
 em-voo/
 terminados/
+hooks-eventos.jsonl
+hook-erro.json
 
 # Node
 node_modules/

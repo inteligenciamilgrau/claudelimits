@@ -1,5 +1,113 @@
 # cota
 
+## Versão para Codex
+
+O projeto também suporta **Codex local (CLI e extensão do VS Code)**. Os
+comandos originais continuam usando Claude; para Codex, use:
+
+```bash
+node cota-codex.js
+node cota-codex.js sondar --json
+node cota-codex.js cabe 4
+node cota-codex.js audit
+node instalar-codex.js
+```
+
+Atalhos: `cota-codex.cmd` no Windows e `sh ./cota-codex` no Linux/macOS.
+O instalador registra o Node usado; ele não precisa estar no PATH depois disso.
+Para remover hooks e skill: `node instalar-codex.js --remover`. O histórico fica.
+
+A consulta executa `codex app-server --stdio`, envia `initialize`, espera a
+resposta, envia `initialized` e chama `account/rateLimits/read`. Não inicia
+thread nem turno de modelo. O próprio Codex usa o login existente e consulta
+seus serviços; este projeto não lê credenciais diretamente.
+
+O saldo é normalizado por duração: 300 minutos e 10080 minutos. Ausência ou
+formato inesperado não vira zero. `--json` também preserva outros limites,
+créditos e quantidade de resets disponíveis; **não consome resets nem créditos**.
+Os percentuais apresentados são **consumidos**. O cálculo de `cabe` considera
+somente as duas janelas gerais, não limites adicionais nem créditos extras.
+
+O estado fica em `$CODEX_HOME/cota` ou `~/.codex/cota`, separado do Claude.
+Use `COTA_CODEX_DIR` para outro diretório de estado e `COTA_CODEX` para indicar
+um executável absoluto. A descoberta também procura a extensão `openai.chatgpt`
+instalada, ignorando versões marcadas obsoletas. Trocas detectadas de conta ou
+plano arquivam a base anterior em `cota/arquivo/`; a nova começa sem estimativa.
+A detecção ocorre na próxima consulta, sujeita ao cache de 60 segundos.
+
+O instalador preserva hooks alheios e grava seus cinco hooks em
+`~/.codex/hooks.json` e a skill em `~/.codex/skills/cota-codex/SKILL.md`
+(respeitando `CODEX_HOME`). **Abra uma sessão local nova e revise as definições
+em `/hooks` para confiar nelas.** A instalação não contorna essa revisão.
+
+Diferenças importantes:
+
+- `PreToolUse` entrega contexto ao agente: Codex não suporta `ask` nesse evento.
+- `SubagentStart`/`SubagentStop` medem custo coletivo e duração; avisos não
+  bloqueiam nem reiniciam subagentes.
+- `SessionEnd` faz somente limpeza local, com timeout de três segundos.
+- Sem registro público de PID equivalente ao Claude, órfãos são descartados
+  pelo `SessionEnd` ou pelo prazo configurado de 48 horas.
+- Hooks locais de comando **não cobrem orquestração na nuvem**. Nesse caso a
+  consulta explícita funciona onde houver CLI/login, mas medição automática
+  não é garantida. Sem amostras, `cabe` responde `SEM BASE`.
+
+Testes: `node teste-codex.js` usa app-server falso, estado temporário e não usa
+rede. `node teste.js` verifica a compatibilidade do Claude. A consulta real
+foi validada no Windows, assim como um ciclo automático de início/fim de
+subagente. Linux/macOS precisam de validação no ambiente de destino.
+
+Referências oficiais: [app-server](https://learn.chatgpt.com/docs/app-server)
+e [hooks](https://learn.chatgpt.com/docs/hooks).
+
+### Perfis, confiança e erros no Codex
+
+Para estimar uma configuração específica:
+
+```bash
+node cota-codex.js cabe 2 --modelo modelo-exato --esforco high --velocidade standard --json
+```
+
+Cada campo omitido fica **desconhecido**. A seleção é exata: modelo, esforço e
+velocidade diferentes não compartilham médias. Os hooks guardam somente os
+metadados recebidos; não presumem padrões. `estimativa.perfisDisponiveis` lista
+os perfis encontrados. Se um trecho contém perfis diferentes ou detecta troca
+de perfil no fim de um subagente, não é usado para atribuir custo a um perfil.
+Uma mudança ocorrida depois de um trecho já encerrado não corrige esse trecho
+retroativamente: metadados de hooks não são telemetria contínua de configuração.
+
+As amostras perdem metade do peso a cada sete dias e saem da análise após 30
+dias. Configure `estimativa.meia_vida_dias` e `estimativa.max_dias`; a poda de
+arquivos (`poda.dias`, por padrão 14) pode remover registros antes desse teto.
+O relatório mostra quantidade, idade, variabilidade e confiança da base:
+`insuficiente`, `baixa` ou `moderada`. São critérios heurísticos, não garantia
+estatística. O consumo continua sendo da conta inteira, incluindo a conversa
+principal, mesmo quando só uma sessão está em uso.
+
+`audit --json` distingue hooks instalados de invocações observadas. Logs do
+wrapper não provam origem automática: também podem vir de uma chamada manual.
+Na primeira rodada com dois subagentes, não apareceram eventos no estado
+global. Na retomada, um teste curto registrou automaticamente `SubagentStart`,
+`SubagentStop`, duração e trecho no Windows. A coleta foi validada nessa sessão;
+uma amostra curta ainda não valida a precisão da estimativa. Não foram
+inseridas amostras simuladas na base real.
+
+Com `--json`, falhas retornam um objeto com `ok: false` e
+`erro: { codigo, mensagem, acao? }`, preservando outros dados de diagnóstico.
+Código de saída 1 indica falha; 2 indica ferramenta desativada. EPERM/EACCES
+incluem orientação sobre cache e sandbox. Use `COTA_CODEX_DIR` para escolher
+outro cache quando necessário; isso não substitui o acesso ao login do Codex.
+Comandos inválidos também retornam erro no modo Codex. Claude mantém seu
+comportamento original.
+
+Testes adicionais: `node teste-erros-codex.js` e
+`node teste-estimativa-codex.js`. Todos usam dados locais/simulados, sem chamar
+um modelo. Para economizar cota durante desenvolvimento, consulte o saldo
+entre etapas, prefira uma tarefa por vez e não abra outra onda com `SEM BASE`
+e saldo baixo. Uma onda de calibração também pode consumir bastante cota.
+
+## Versão para Claude Code
+
 Deixa o agente do Claude Code saber quanto da sua cota de uso já foi gasto, e
 responder a pergunta que interessa antes de disparar trabalho pesado: **a cota
 aguenta lançar 10 subagentes em paralelo? E se não, quantos agora?**

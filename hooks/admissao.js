@@ -15,6 +15,13 @@ const fs = require('fs');
 const core = require('../lib/core');
 
 function perguntar(motivo) {
+  if (core.CODEX) {
+    process.stdout.write(JSON.stringify({ hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      additionalContext: motivo.replace('Confirma?', 'Consulte cota-codex.js cabe antes da próxima onda e informe a restrição ao usuário.'),
+    } }));
+    process.exit(0);
+  }
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
       hookEventName: 'PreToolUse',
@@ -27,7 +34,8 @@ function perguntar(motivo) {
 
 try {
   let ev = null;
-  try { ev = JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) {}
+  try { ev = core.CODEX && Object.prototype.hasOwnProperty.call(core, 'eventoHook')
+    ? core.eventoHook : JSON.parse(fs.readFileSync(0, 'utf8')); } catch (_) {}
 
   const cfg = core.lerConfig();
   if (!cfg.ligado || !cfg.admissao.ligado) process.exit(0);   // D2
