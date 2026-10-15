@@ -45,11 +45,12 @@ inteiro, e diga ao usuário que a primeira leva é de calibração.
 
 Quando a saída disser `pode disparar os N de uma vez`, pode.
 
-O custo por subagente vem de **medição coletiva**: mede-se o gasto da onda
-inteira e divide pelo número de participantes. É média, não atribuição — dentro
-de uma onda paralela não dá para saber qual agente gastou o quê. Se um tipo de
-agente for muito mais caro que os outros na mesma onda, a média esconde isso.
-Para trabalho heterogêneo pesado, prefira ondas do mesmo tipo de agente.
+O custo por subagente vem de **medição coletiva**: o que a cota sobe enquanto
+eles rodam é dividido entre eles, pelo tempo de cada um. É divisão, não
+atribuição — com vários rodando juntos não dá para saber qual gastou o quê. Se
+um tipo de agente for muito mais caro por minuto que os outros, a divisão
+esconde isso. Para trabalho heterogêneo pesado, prefira ondas do mesmo tipo de
+agente.
 
 ## Você será avisado durante o trabalho
 
@@ -66,9 +67,22 @@ se a decisão mudar (por exemplo: agora não cabe mais, e você vai parar).
 {{COTA}}
 ```
 
-As duas janelas com percentual e reset, e o ritmo medido no período recente.
+As duas janelas com percentual e reset, o semanal por modelo, e o ritmo medido
+no período recente.
 
-**O ritmo é descrição do passado, não previsão.** `12%/h nos últimos 2h11`
+A leitura vem do próprio Claude Code — os mesmos números do `/usage`: se a
+última tiver mais de um minuto, o comando lê de novo antes de responder (leva
+cerca de 1,5s e não gasta cota).
+Para forçar uma leitura agora:
+
+```bash
+{{COTA}} sondar
+```
+
+Se a saída disser que **a sonda falhou**, mostre o erro ao usuário — ele vem
+com o conserto — e trate a cota como sem dado.
+
+**O ritmo é descrição do passado, não previsão.** `12%/h nos últimos 1h00`
 quer dizer que isso já aconteceu — não que vai continuar. Não extrapole para
 dizer quando a cota acaba: o uso é por rajadas (workflow pesado que queima em
 minutos, depois dias parado, depois perguntas lentas), e nenhuma média entre
@@ -110,19 +124,17 @@ verdade, é problema real — não é o comando errado.
 
 ## Interpretar o estado do dado
 
-Cada janela vem com um estado, e ele muda o que o número vale:
+Quase sempre a leitura é fresca. Se a sonda estiver falhando, o número
+gravado envelhece, e cada janela passa a vir com um estado que muda o que ele
+vale:
 
 - **fresco** — vale como está.
 - **piso** — leitura velha, janela ainda viva. O valor é um **mínimo**: pode
   estar mais alto agora, nunca mais baixo. Decida por ele, errando para o lado
-  seguro. Aparece como `≥34%`.
+  seguro. Aparece como `(pelo menos — leitura velha)`.
 - **expirado** — a janela virou. O número **não vale nada**: não é o valor
   antigo nem zero. Nunca repita um valor expirado ao usuário.
 - **desconhecido** — a premissa do piso foi violada. Trate como sem dado.
-
-Armadilha: o contador de reset (`↻`) é calculado do relógio e desce sozinho
-**mesmo com o percentual congelado**. Contador andando não prova dado fresco.
-Só o estado prova.
 
 ## Quando a cota estiver acabando
 
@@ -136,6 +148,7 @@ Se a janela estiver perto do fim e o trabalho não couber:
 
 ## A verdade é o /usage
 
-O `/usage` vem da Anthropic. O `cota` é código local e pode errar. Se os dois
-discordarem, o `/usage` ganha — e o usuário registra a divergência com
-`cota.js audit <5h> <7d>`, usando os números que o `/usage` mostrou.
+Os números são os mesmos do `/usage`, lidos do próprio Claude Code. O que é cálculo local — custo por agente,
+quantos cabem, ondas — pode errar, e erra para o lado seguro. Se o usuário
+disser que o `/usage` mostra outra coisa, acredite nele e rode
+`{{COTA}} sondar`.

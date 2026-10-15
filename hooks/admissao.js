@@ -32,6 +32,9 @@ try {
   const cfg = core.lerConfig();
   if (!cfg.ligado || !cfg.admissao.ligado) process.exit(0);   // D2
 
+  // D40 — operação pesada vale o segundo e pouco de uma leitura fresca.
+  require('../lib/sonda').garantirFrescoHook(cfg.sonda.idade_s);
+
   const est = core.lerEstado();
   if (!est) process.exit(0);
 
@@ -51,12 +54,6 @@ try {
   };
   ver(j.cinco, '5h', false);
   ver(j.sete, 'semanal', true);
-
-  // D22 — em modo desconfiado a ferramenta não autoriza operação pesada calada.
-  if (cfg.modo_desconfiado) {
-    perguntar('[cota] Modo desconfiado ligado: a última aferição contra o /usage ' +
-              'divergiu. Confira com `cota audit` antes de disparar operação pesada.');
-  }
 
   if (!acima.length) process.exit(0);
 

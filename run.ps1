@@ -33,6 +33,6 @@ if (-not $node) { $node = 'node' }
 
 $alvo = Join-Path $dir $alvoRel
 
-# Repassa o stdin (o JSON da status line / do hook) para o node.
+# Repassa o stdin (o JSON do hook) para o node.
 $entrada = $input | Out-String
 $entrada | & $node $alvo

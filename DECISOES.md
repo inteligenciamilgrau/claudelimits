@@ -1,6 +1,11 @@
 # cota — decisões
 
-Só superfícies oficiais documentadas da Anthropic.
+O porquê de cada escolha do projeto, para quem for mexer nele.
+
+Os números têm buracos de propósito: são as decisões da primeira versão, que
+lia a cota pela status line, aposentadas quando a leitura headless da cota
+apareceu (D39, D44). O texto completo delas continua no histórico do git:
+`git show e5aac19:DECISOES.md`.
 
 ## Missão
 
@@ -8,586 +13,441 @@ O agente precisa responder **antes** de disparar coisa pesada:
 
 > "vou lançar um workflow com 10 agentes em paralelo — a cota aguenta?"
 
-E quando não aguentar: *quantos aguenta?*, *compensa esperar o reset?*, e se
-estiver no fim, **parar de forma limpa e marcar o despertador**.
+E quando não aguentar: *quantos aguenta agora?*, *compensa esperar o reset?*, e
+se estiver no fim, **parar de forma limpa**.
 
 Ler o percentual é meio do caminho. O que decide é a conta:
 
 ```
-cabe?  =  custo_estimado_da_operação  <  restante_da_cota × margem
+cabe?  =  n × custo_por_agente  <  restante × margem
 ```
 
-O `restante` a gente tem. O **`custo_estimado` é a peça que falta** — e é o
-coração do projeto.
+O `restante` vem do próprio Claude Code (os números do `/usage`). O **custo por agente** é medido pela própria
+ferramenta, trecho a trecho (D47) — é o coração do projeto.
 
-## O que é capturado
+## O que é lido
 
-Quatro números, direto do JSON oficial da status line — sempre **percentual +
+Da resposta do `get_usage` (D39), duas cotas independentes, sempre **percentual +
 horário de reset**, nunca um sem o outro:
 
-| Campo | Exemplo |
+| `kind` | Vira |
 |---|---|
-| `rate_limits.five_hour.used_percentage` | `23.5` |
-| `rate_limits.five_hour.resets_at` | `1755624000` (epoch, UTC) |
-| `rate_limits.seven_day.used_percentage` | `41.2` |
-| `rate_limits.seven_day.resets_at` | `1755970800` |
+| `session` | a janela de 5 horas |
+| `weekly_all` | a semanal, todos os modelos |
+| `weekly_scoped` | a semanal de um modelo (ex.: Fable) — mostrada, não decide |
 
-São **duas cotas independentes**, cada uma com seu percentual e seu reset. A
-semanal não é a soma das janelas de 5h: você pode estar em 10% na de 5h e em
-95% na semanal, e é a semanal que te para.
+A semanal não é a soma das janelas de 5h: dá para estar em 10% numa e 95% na
+outra, e é a semanal que para você.
 
-Saída sempre com percentual + reset juntos:
+## Comportamento
 
-> `5h:  usou 23.5%  ·  reseta em 2h14 (hoje 14:20)`
-> `7d:  usou 41.2%  ·  reseta sáb 23/08 13:31 (em 4d 3h)`
+**D1 — Sem freio de loop.** Nada de hook bloqueando o agente no meio do
+trabalho. Subagente travado no meio de um fan-out vira falha misteriosa.
 
-## Papéis
-
-| | Quem | Faz |
-|---|---|---|
-| **Sensor** | status line | Única coisa que enxerga `rate_limits`. Só observa e grava. Burro e rápido. |
-| **Leitor** | CLI + skill | Interpreta: está velho? virou a janela? qual o ritmo? Toda a lógica mora aqui. |
-| **Aviso** | hook `UserPromptSubmit` | Pega carona na mensagem que você já ia mandar. |
-
-Sensor não decide nada. Leitor não observa nada.
-
-## Decisões
-
-**D1 — Sem freio de loop.** Nada de `PostToolBatch` bloqueando o agente.
-Subagente travado no meio de um fan-out vira falha misteriosa. Descartado.
-
-**D2 — A chave desliga a ferramenta inteira.** Desligada: se o agente pedir a
-cota, recebe "ferramenta desativada", e o aviso automático some. Religada:
-volta a funcionar, **calada**, sem anunciar que voltou.
+**D2 — A chave desliga a ferramenta inteira.** Desligada, a consulta responde
+"desativada", e nada lê, avisa nem mede. Religada, volta calada.
 
 **D3 — Aviso só pega carona.** Só em mensagem que você mandou. Nunca cria
 turno, nunca acorda sessão parada. Abaixo do limiar não injeta nada.
 
-**D4 — Dado velho tem três estados**, e os dois úteis erram para o lado seguro:
+**D4 — Leitura velha tem estados, e os dois úteis erram para o lado seguro.**
+Com a sonda a leitura quase sempre é fresca; se ela falhar, o número envelhece:
 
 | Situação | Vale como |
 |---|---|
-| `agora < resets_at`, leitura recente | o número |
-| `agora < resets_at`, leitura velha | **piso** — na mesma janela a cota só sobe |
-| `agora >= resets_at` | **nada** — a janela virou; não é o valor antigo nem 0% |
+| `agora < reset`, leitura recente | o número |
+| `agora < reset`, leitura velha | **piso** — na mesma janela a cota só sobe |
+| `agora >= reset` | **nada** — a janela virou; não é o valor antigo nem 0% |
 
-**D5 — O piso se autocorrige.** Se o leitor observar a porcentagem *cair* sem o
-`resets_at` mudar, a hipótese de D4 caiu: ele registra e passa a tratar dado
-velho como desconhecido. A mecânica da janela não é documentada — não apostar.
+**D5 — O piso se autocorrige.** Se a porcentagem *cair* sem o reset mudar, a
+hipótese do D4 morreu, e dado velho passa a valer como desconhecido. A mecânica
+da janela não é documentada — não apostar.
 
-**D6 — Mural compartilhado.** O limite é da conta, não da sessão: toda sessão
-escreve no mesmo arquivo e mais escritores = mais fresco. Sensor só grava se o
-que ele traz for mais novo que o que está lá (nunca sobrescreve cego).
+**D8 — Config em arquivo, virada por comando.** Nada de variável de ambiente
+para o comportamento: exige reiniciar e não dá para ver o estado.
 
-**D7 — Histórico por sessão**, juntado na leitura. Mata a corrida de append e
-mostra qual sessão está queimando cota.
+**D9 — Reset é previsto, não vigiado.** O horário de reset chega horas antes;
+comparar com o relógio basta.
 
-**D8 — Config em arquivo, virada por comando.** Nada de variável de ambiente:
-exige reiniciar e não dá para ver o estado. Vale no próximo turno.
+**D10 — Guardar absoluto, mostrar relativo.** No arquivo vai o reset em epoch;
+o "reseta em 2h" é calculado na hora de mostrar. Gravar "2h" apodrece em
+cinco minutos, sem ninguém avisar.
 
-**D9 — Reset é previsto, não vigiado.** `resets_at` chega horas antes; comparar
-com o relógio basta. Sem polling, sem watcher.
+**D11 — O formato segue o horizonte.** Janela de 5h: relativo na frente
+(`em 2h14`), porque o que importa é "dá tempo?". Semanal: dia da semana e hora
+na frente (`sáb 23/08 13:31`), porque `em 4d 3h` ninguém consegue planejar.
 
-**D10 — Guardar absoluto, mostrar relativo.** No arquivo vai só o `resets_at`
-em epoch; o "reseta em 2h" é calculado contra o relógio na hora de mostrar.
-Gravar "2h" apodrece: cinco minutos depois já está errado, e sem ninguém avisar.
-É a mesma família de erro do `22:00` do `teste.ps1`.
+**D13 — A unidade é o percentual da janela.** Dólar não entra: é estimativa,
+assinante não paga por token, e traria uma hipótese frágil para o meio de uma
+conta que precisa ser confiável. Ritmo é `Δ% ÷ Δtempo` da **última hora**, só
+na mesma janela. O histórico só ganha ponto quando o número muda, então é uma
+escada: o valor de uma hora atrás é o do último ponto até lá, e a leitura de
+agora fecha a conta. Sem ela, um período parado depois de uma subida sumia, e
+às 13h a ferramenta dizia "28%/h" sobre uma subida das 9h.
 
-**D11 — Formato segue o horizonte.** Janela de 5h: relativo na frente
-(`em 2h14`), porque o que importa é "dá tempo de terminar isso?". Janela
-semanal: **dia da semana + data + hora** na frente (`sáb 23/08 13:31`), porque
-`em 4d 3h` ninguém consegue planejar. As duas mostram a outra forma entre
-parênteses.
+**D15 — Decide a janela mais apertada.** Uma operação pode caber na de 5h e
+estourar a semanal. Avalia as duas e obedece a pior.
 
-**D12 — Custo zero fora do necessário.** Sensor é processo local: nenhuma
-chamada de API, nenhum token. Aviso só custa tokens quando dispara.
+**D16 — Esperar é resposta.** Se a de 5h reseta em 20min, esperar e ter a
+janela inteira ganha de rodar agora com 15%. A saída não é só sim/não.
 
-## Ritmo e custo por agente — tudo em % da janela
-
-**D13 — A unidade é o percentual da janela. Só.** Dólar não entra: é estimativa
-client-side, assinante não paga por token, e traria uma hipótese frágil para o
-meio de uma conta que precisa ser confiável. Token entra só como sinal
-secundário de "esta sessão está pesada" — nunca como base de decisão.
-
-O "está gastando rápido demais?" já tem resposta direta, e na unidade certa:
-
-```
-ritmo = Δ% da janela ÷ Δtempo     → "% por hora"
-```
-
-Dois pontos da mesma janela bastam (mesmo `resets_at`; se mudou, a janela virou
-e o histórico anterior não vale — D4).
-
-**D14 — Custo por subagente medido em Δ%, só com amostra limpa.** Os hooks
-`SubagentStart` e `SubagentStop` cercam cada subagente e o Δ% do intervalo é o
-custo dele. Isso é contaminável: outra sessão queimando no mesmo período entra
-na conta. Mas a contaminação é **detectável** — o mural tem histórico por sessão
-(D7), então dá para saber se outra sessão registrou atividade no intervalo.
-Regra: só vira amostra se **um único subagente estava em voo** e **nenhuma outra
-sessão escreveu** no período. Amostra suja é descartada, não corrigida. Com
-`agent_type` no payload, sai média por tipo de agente. Daí a conta da missão:
-
-```
-quantos_cabem = (restante% × margem) ÷ custo_médio_por_agente%
-```
-
-**D15 — Decidir pela janela mais apertada.** Uma operação pode caber na de 5h e
-estourar a semanal. Sempre avaliar as duas e obedecer a pior. Com dado velho,
-usar o **piso** de D4 — errar para o lado de não disparar.
-
-**D16 — Esperar é uma resposta legítima.** Se a de 5h reseta em 20min, esperar e
-ter a janela inteira ganha de rodar agora com 15%. A saída não é só
-sim/não — é: `vai` · `cabem N` · `espera até HH:MM e vai inteiro`.
-
-## Parada e retomada
-
-**D17 — Quem para é o agente, não o hook.** D1 continua de pé: nada de
-`PostToolBatch` matando subagente no meio. O agente lê, entende, para sozinho e
+**D17 — Quem para é o agente, não o hook.** O agente lê, entende, para sozinho e
 **escreve o estado** do que fez e do que falta. Parada limpa, não morte súbita.
 
-**D18 — Alarme sim, retomada automática não (por padrão).** Como `resets_at` é
-conhecido (D9), agendar no horário exato é determinístico. Mas agente que
-acorda sozinho às 3h e queima a janela nova sem ninguém olhando é o mesmo
-problema invertido. Padrão: **avisa e entrega o estado salvo**. Retomar sozinho
-é opção que você liga.
+**D18 — Retomada automática não.** Agente que acorda sozinho às 3h e queima a
+janela nova sem ninguém olhando é o mesmo problema invertido. Avisa o horário
+do reset e entrega o estado salvo.
 
-**D19 — Interceptar no `PreToolUse` de operação pesada.** Matcher nas tools de
-agente/workflow: se a cota estiver baixa, devolver `permissionDecision: "ask"` —
-te pergunta antes de lançar os 10 agentes, com o número na tela. Não é o bloqueio
-cego de D1; é confirmação informada, e quem decide é você.
+**D19 — Perguntar no `PreToolUse` de operação pesada.** Com a cota alta, as
+tools de agente e workflow devolvem `permissionDecision: "ask"` com o número na
+tela. Não é bloqueio (D1): é confirmação informada, e quem decide é você.
 
-## Auditoria — `/cotaaudit`
+## Ondas, trechos e custo
 
-**O `/usage` não pode estar errado — vem da Anthropic. O `cota` pode.** É código
-nosso, e o número passa por muita mão até chegar: sensor → arquivo → relógio →
-ritmo estimado → conta de admissão. Cada elo desses inventa um jeito de
-mentir. O audit existe para desconfiar do `cota`, **nunca** do `/usage`.
+**D25 — Varrer órfãos do medidor.** Se a sessão morre com um subagente
+rodando, o `SubagentStop` nunca dispara e ele fica "em voo" para sempre,
+levando parte de cada trecho. Entrada em voo há mais de `medidor.orfao_max_s`
+(2h) é descartada antes de qualquer medição — e a parte que ela acumulou se
+perde, porque não há como saber o que era dela.
 
-Três camadas, e a terceira não é automática de propósito:
-
-1. **Autoteste** — injeta payload conhecido no sensor e confere a saída.
-   Responde *"o código está certo?"* sem depender do Claude Code.
-2. **Cadeia de custódia** — responde *"o dado está chegando?"*.
-3. **Aferição** — mostra o que ele tem e pede para você comparar com o `/usage`.
-   `cota audit ok` / `cota audit 47` grava a conferência.
-
-O que a máquina checa sozinha:
-
-| Checagem | Pega o quê |
-|---|---|
-| `0 ≤ pct ≤ 100` | lixo, campo trocado, `null` virando `0` |
-| `five_hour.resets_at` no máximo 5h à frente | dado corrompido **ou relógio local torto** |
-| `seven_day.resets_at` no máximo 7d à frente | idem |
-| `resets_at` já passou | dado expirado sendo servido como válido |
-| pct caiu sem `resets_at` mudar | **D5 violado** — a hipótese do piso morreu |
-| idade do snapshot vs `refreshInterval` | o sensor parou de rodar |
-| quantas sessões escreveram, e quando | mural com um escritor só envelhece rápido |
-| linhas corrompidas / buracos no histórico | corrida de append (D7) |
-| ritmo (D13) coerente entre janelas? | histórico furado ou janela virando sem registro |
-| quantas amostras limpas por tipo de agente (D14)? | admissão decidindo com base fraca |
-
-As duas checagens de "no máximo Nh à frente" são **suspeita, não veredito**: a
-mecânica da janela não é documentada. Se dispararem, é sinal de investigar — e
-podem ser o próprio audit derrubando uma premissa nossa.
-
-**D20 — O audit não depende do que ele audita.** Se não há snapshot, ele diz em
-qual elo a corrente quebrou — settings → comando → processo → arquivo → idade →
-validade — nunca "sem dados". É a ferramenta de diagnóstico; tem que funcionar
-justamente quando o resto não funciona.
-
-**D21 — Aferição humana fica gravada.** Cada `cota audit ok` vira uma linha com
-data e desvio. Com o tempo dá para dizer "conferido 9 vezes, bateu 9". Sem
-histórico, audit é opinião.
-
-**D22 — Em divergência, o `/usage` ganha, e a ferramenta se rebaixa.** Se a
-aferição acusar desvio grande, o `cota` não corrige o número e segue confiante:
-ele entra em **modo desconfiado** — responde com o desvio junto e para de
-autorizar operação pesada até você conferir de novo. Ferramenta de admissão que
-erra para mais é pior que ferramenta nenhuma: faz o agente lançar 10 agentes
-achando que cabe.
-
-## Descobertas de campo
-
-Estas três vieram de rodar a coisa de verdade, não do desenho.
-
-**D23 — Sensor manual.** A extensão do VS Code não executa status line (roda o
-`claude` em `--output-format stream-json`, sem TUI; confirmado também em
-headless). Então `cota leitura <5h> <7d> [prazo5h] [prazo7d]` deixa o humano
-ser o sensor: lê o `/usage` e digita. Os prazos usam o mesmo formato que o
-`/usage` mostra (`3h44`, `54min`, `2d3h`) e viram `resets_at` absoluto na
-gravação (D10). Marca `origem: manual`, porque dado digitado não se atualiza
-sozinho e o audit precisa dizer isso. Leitura manual **ignora a guarda de D6**:
-vem do `/usage`, é a fonte mais autoritativa disponível, e é ato deliberado.
-
-**D24 — Observação não é confirmação.** O `rate_limits` só se renova quando
-*aquela sessão* recebe resposta da API. Sessão aberta e ociosa continua rodando
-o sensor a cada `refreshInterval` e **repetindo o último valor** — `t` novo,
-número velho: dado podre com carimbo fresco, o pior dos mundos. O snapshot passa
-a ter dois carimbos, e é `t_confirmado` que decide `fresco` vs `piso`. O sinal é
-`total_input_tokens`: se não mudou, nenhuma resposta nova chegou.
-
-Consequência prática: **a sessão que trabalha precisa ser a que observa.** Uma
-TUI acoplada à sessão em uso serve de sensor mesmo com você digitando noutra
-janela — uma única chamada de API dela traz o número da conta inteira, incluindo
-o que as outras superfícies gastaram.
-
-**D25 — Varrer órfãos do medidor.** Se a sessão morrer com um subagente rodando,
-o `SubagentStop` nunca dispara e a entrada fica em voo para sempre. A partir daí
-toda amostra seguinte é marcada suja por "outro subagente em voo", e o `cabe N`
-trava em `SEM BASE` sem ninguém entender por quê. Entrada com mais de
-`medidor.orfao_max_s` (2h) é descartada antes de qualquer medição.
-
-**D26 — Descoberta em três camadas, e só a última é confiável.** Um chat novo
-não sabe que esta ferramenta existe: o agente nunca vê a status line (ela é
-desenhada para o humano, não entra no contexto). Três mecanismos oficiais
-resolvem isso, com alcances diferentes:
-
-| Camada | Mecanismo | Depende do agente? |
-|---|---|---|
-| Ensina | skill `~/.claude/skills/cota/` | sim — ele julga se é relevante |
-| Avisa | hook `UserPromptSubmit` | não — chega colado na mensagem |
-| Barra | hook `PreToolUse` | não — ele é parado ao tentar |
-
-A skill é a única que depende de julgamento do modelo, e julgamento falha. Por
-isso as três coexistem em vez de uma só: a `admissao` pega justamente o agente
-que ignorou as outras duas e saiu disparando fan-out. Instalar só a skill é
-deixar a proteção na mão de quem ela deveria proteger.
-
-**D27 — A CLI não pune digitação.** Se `cota ver` responde "code 1" e uma linha
-de uso, o agente conclui que a ferramenta está quebrada e segue **sem checar a
-cota** — exatamente o acidente que ela previne. Então: sinônimo é aceito, acento
-e caixa são ignorados, número solto vira `cabe`, comando desconhecido mostra a
-situação em vez de reclamar, e exceção interna vira mensagem com instrução. Nada
-sai com código de erro por digitação. Erro de verdade passa a significar
-problema de verdade.
-
-**D28 — Sem projeção de consumo. Ritmo é medição, não profecia.** Havia uma
-projeção: extrapolava `%/h` até 100% e avisava se isso caía antes do reset. Ela
-emitiu "acaba ANTES do reset" com **1% consumido** — media 55min de trabalho
-ativo e projetava 167h de relógio, uma extrapolação de 180x.
-
-A primeira correção foi exigir cobertura mínima do horizonte. Estava errada: o
-defeito não é base curta, é supor processo **estacionário**. O uso real tem três
-regimes sem mistura previsível — workflow violento que queima a cota em minutos,
-dois dias sem acessar nada, sessão interativa lenta de pergunta e resposta.
-Nenhuma média entre eles descreve qualquer um deles, então medir mais tempo não
-conserta: produz uma média mais confiante e igualmente errada.
-
-A função saiu inteira, e o teste verifica a ausência — código morto com nome
-tentador acaba religado por alguém que não leu isto. O que fica:
-
-- **`ritmo()`** — medição do passado recente, sempre com o intervalo junto
-  (`12%/h nos últimos 2h11`). Responde "está indo rápido demais?", que era o que
-  o usuário pediu.
-- **`admissao()`** — responde "cabe N agentes?" por **custo medido por subagente
-  contra o que resta**. É aritmética sobre medição, não extrapolação no tempo, e
-  por isso nunca dependeu da projeção.
-
-Alarme que dispara com 1% ensina a ignorar alarme. Nesta ferramenta a
-credibilidade do aviso é o produto.
+**D28 — Sem projeção de consumo.** Havia uma: extrapolava `%/h` até 100% e
+emitiu "acaba ANTES do reset" com 1% consumido — media 55min de trabalho e
+projetava 167h de relógio. O defeito não era base curta, era supor uso
+estacionário. O uso real tem regimes sem mistura previsível (workflow violento,
+dias parado, perguntas lentas), e nenhuma média entre eles descreve qualquer
+um. A função saiu inteira, e o teste verifica a ausência. Fica o ritmo, como
+**medição** do passado recente, e a admissão, que é aritmética sobre custo
+medido. Alarme que dispara com 1% ensina a ignorar alarme.
 
 **D29 — Onda em vez de salva.** A pergunta útil não é "N cabe?", é "quantos
-disparar agora?". Observação de campo: um workflow dispara muito agente em
-paralelo, e dez de uma vez gastam a cota no exato momento em que se sabe menos
-sobre ela. Em ondas, cada uma devolve medição (o medidor grava no
-`SubagentStop`) e a seguinte decide com base melhor — e entre uma onda e outra
-é a única hora em que parar sai barato.
+disparar agora?". Dez de uma vez gastam a cota no momento em que se sabe menos
+sobre ela; em ondas, cada uma devolve medição, e entre uma e outra é a única
+hora em que parar sai barato. Uma onda nunca compromete mais que 25% do
+orçamento da janela crítica. Com folga, a onda é o pedido inteiro. Reprovado
+não ganha onda de consolação. Sem base nenhuma, a primeira onda é pequena e
+declarada como calibração.
 
-Uma onda nunca compromete mais que `FRACAO_ONDA` (25%) do orçamento da janela
-crítica, então errar a estimativa por 4x ainda não estoura. Com folga real, a
-onda é o pedido inteiro: não se inventa cerimônia quando não há risco. Quem
-recebeu `NÃO CABE` não ganha onda — seria contrabandear o "não".
+**D30 — O vigia do workflow.** O aviso pega carona na sua mensagem — durante um
+workflow ninguém digita. A admissão dispara uma vez, no lançamento. O
+`SubagentStop` é o único evento que bate ponto sozinho enquanto o trabalho
+corre, e não viola o D3: se disparou, há trabalho em curso. Fala por
+`systemMessage`, nunca bloqueia, com limiar mais baixo (70/60) e faixas de 5%.
 
-Isso também desatou o `SEM BASE` inicial. O veredito antigo dizia "rode e a base
-se forma sozinha", o que convidava a disparar tudo justamente sem estimativa
-nenhuma. Agora a primeira onda é pequena e declarada como calibração: ela existe
-para medir, e errar nela é barato.
+**D31 — Paralelismo não é sujeira, e o custo é divisão, não atribuição.**
+Com vários subagentes rodando juntos não dá para saber quem gastou o quê, e
+fingir que dá seria pior. O que se mede é quanto a cota subiu com eles em voo,
+dividido entre eles. Paralelismo é o objeto que a ferramenta existe para
+dimensionar. (A primeira forma disso — a onda inteira como unidade, do
+primeiro subagente ao último — saiu no D47.)
 
-**D30 — O vigia do workflow.** Os outros dois avisos não cobrem o cenário que
-mais importa. O `aviso` pega carona na mensagem do humano — durante um workflow
-ninguém está digitando, então ele nunca roda. O `admissao` dispara uma vez, no
-lançamento, e o workflow queima 10% nos 15 minutos seguintes.
+**D32 — Média agrupada.** Soma dos custos ÷ soma dos agentes, não média de
+médias. Do primeiro workflow real, 65% em 63 agentes = 1.03%/agente. Trecho
+curto mede 0% (o percentual é inteiro) e entra assim mesmo — zero ali é
+"abaixo da resolução", não "de graça". Naquele workflow, onda grande saiu mais
+barata por agente (overhead fixo dividido); a média unitária
+superestima as grandes, que é o lado certo de errar.
 
-`SubagentStop` é o único evento que bate ponto sozinho enquanto o trabalho corre,
-e ele não viola o D3: se disparou, há trabalho em curso por definição — é carona,
-não despertador. Fala por `systemMessage`, único canal que o evento aceita
-(`additionalContext` não é suportado ali). Nunca bloqueia: `SubagentStop`
-bloquearia o subagente errado, o que já terminou, e parar continua sendo decisão
-do agente (D17).
+**D33 — Nada de ler-alterar-regravar arquivo compartilhado.** Com a lista de
+participantes num arquivo único, hooks simultâneos se atropelavam: 16 de uma
+vez perdiam 9 (o rename do Windows falha com EPERM e os que passam se
+sobrescrevem). Cada subagente grava só os próprios arquivos; contar é listar a
+pasta. O marco é criado com `wx`, e quem fecha um trecho o reivindica
+renomeando — dois fechando juntos, só um consegue (D47). Gravação atômica com repetição em
+EPERM, e varredura de `.tmp` órfão só dos velhos.
 
-Limiar mais baixo que o do `aviso` (70/60 contra 80/70) e assinatura por faixa de
-5% em vez de 10%, porque durante workflow a cota anda rápido e cada faixa nova
-merece ser dita uma vez. Desligável sozinho por `vigia.ligado`, e junto com tudo
-pela chave geral.
+## Ferramenta para agente
 
-**D31 — A onda é a unidade de medida. Paralelismo não é sujeira, é o objeto.**
-O D29 (ondas) entrou sem ser reconciliado com o D14 (amostra limpa), e o
-resultado foi um defeito que se anulava: o D14 só aceitava amostra com **um**
-subagente sozinho em voo, mas a ferramenta existe para dimensionar **fan-out
-paralelo**. Toda amostra de uma onda de 2+ nascia suja por "outro subagente em
-voo".
+**D20 — O audit não depende do que ele audita.** Diz em que elo a corrente
+quebrou, nunca só "sem dados". E sempre lê de verdade: é o teste da corrente
+inteira.
 
-Medido antes do conserto, com uma onda de 2 simulada:
+**D26 — Descoberta em três camadas.** Um chat novo não sabe que a ferramenta
+existe. A skill **ensina** (depende do julgamento do modelo, que falha), o
+`UserPromptSubmit` **avisa** (chega colado na mensagem), o `PreToolUse`
+**pergunta** (pega quem ignorou as outras duas). Instalar só a skill é deixar a
+proteção na mão de quem ela deveria proteger.
 
-```
-#1  custo5=2%  limpa=false  motivos: outro subagente ainda em voo
-#2  custo5=4%  limpa=false  motivos: outro subagente em voo no início
-LIMPAS: 0 de 2
-```
+**D27 — A CLI não pune digitação.** Se `cota ver` respondesse "code 1", o
+agente concluiria que a ferramenta está quebrada e seguiria **sem checar a
+cota**. Sinônimo é aceito, acento e caixa ignorados, número solto vira `cabe`,
+comando desconhecido mostra a situação. Erro passa a significar problema de
+verdade. Pelo mesmo motivo a skill traz o comando **literal** desta máquina,
+gerado na instalação.
 
-Zero. A onda de calibração do D29 nunca formaria base, e o `SEM BASE` seria
-permanente — sem erro, sem aviso, sem ninguém entender por quê. O pior tipo de
-defeito: dois acertos isolados que se cancelam.
-
-Agora a onda vai do primeiro `SubagentStart` com o céu vazio até o
-`SubagentStop` que o esvazia. Mede-se o Δ% do período e divide pelo número de
-participantes. O que continua sujando é o que de fato contamina: **outra
-sessão** escrevendo no período, a janela virando no meio, ou o sensor não tendo
-observado nada novo.
-
-A divisão por participante é **média, não atribuição** — dentro de uma onda não
-dá para saber qual agente gastou o quê, e fingir que dá seria pior que admitir.
-Fica gravado como `atribuicao: 'onda'` com o `onda_n`, para o audit poder dizer
-de onde veio o número.
-
-Efeito colateral bom: agora existe `ondas.jsonl`, que responde direto a pergunta
-que interessa — *quanto custou uma onda de N* — sem passar pela média.
-
-**D32 — Média agrupada, e amostra suja é melhor que amostra nenhuma.** O
-primeiro workflow real mediu 9 ondas — 65% de cota gastos em 63 agentes — e o
-`cabe` respondia `SEM BASE`. Dois erros somados, cada um invisível sozinho.
-
-```
-n=7 → 21%    n=16 → 7%    n=14 → 7%    n=6 → 10%    n=4 → 9%    n=1 → 5%
-n=5 →  0% (limpa)         n=7 →  0% (limpa)
-```
-
-**(1) Zero não quer dizer "de graça", quer dizer "abaixo da resolução".** Das 9
-ondas, só 2 passaram no critério de limpa — e eram as duas mais **curtas**, de
-94s e 167s. O percentual vem em número inteiro, então uma onda que custa 0,4%
-mede 0. A média das limpas deu `0.000%/agente`, o custo unitário não era maior
-que zero, e o `cabe` travava. O filtro selecionava sistematicamente as ondas
-mais baratas e concluía que subagente é grátis.
-
-**(2) O critério de limpeza supunha uma sessão só.** O motivo de sujeira
-dominante era "outra sessão escreveu no período" — e este usuário roda VS Code
-e TUI ao mesmo tempo, por padrão. Contaminação de outra sessão **infla** o Δ,
-ou seja, erra para o lado seguro no controle de admissão. Superestimar custo
-deixa conservador; não ter número nenhum deixa cego. Então a base suja passou a
-ser usada quando a limpa não serve, com o rótulo dizendo isso — nunca chamando
-de "limpa" o que não é.
-
-**O estimador agora é agrupado**: soma dos custos ÷ soma dos agentes, não média
-de médias. Como cada participante carrega `Δ_onda/n`, somar tudo dá exatamente
-`ΣΔ/Σn`, que respeita o peso de cada onda. Com os dados acima: **65/63 =
-1.03%/agente** — número utilizável, de `SEM BASE` para `VAI, cabem 14`.
-
-A mensagem de erro também mentia: dizia "nenhuma janela utilizável para
-comparar", culpando a janela por um problema de medição. Agora diz que as ondas
-foram curtas demais para aparecer no percentual inteiro.
-
-Um padrão apareceu nos dados e vale registrar: **onda grande é mais barata por
-agente** (n=16 → 0,44%/agente contra n=1 → 5%/agente). Provável overhead fixo
-de contexto que muitos dividem. Isso torna a média unitária um modelo fraco —
-ela subestima ondas pequenas e superestima grandes — mas é o que o controle de
-admissão precisa, e errar para cima é o lado certo de errar.
-
-**D33 — Nada de leitura-alteração-regravação em arquivo compartilhado.** Havia
-seis `onda-atual.json.<pid>.tmp` órfãos no diretório real, cada um com uma lista
-de participantes dentro. Sintoma de um defeito que só aparece sob fan-out — que
-é o único cenário que importa aqui.
-
-A versão anterior guardava os participantes num arquivo único: cada subagente
-lia, se acrescentava e regravava. Com N hooks disparando ao mesmo tempo isso
-perde dado de duas formas, e as duas foram medidas com processos reais:
-
-```
- 4 simultâneos  ->  0 de 4 perdidos
- 8 simultâneos  ->  3 de 8 perdidos     EPERM: rename
-16 simultâneos  ->  9 de 16 perdidos    (56%)
-```
-
-O `rename` do Windows falha com **EPERM** quando outro processo tem o destino
-aberto — e o `.tmp` fica órfão, com a gravação perdida. Os que passam ainda se
-sobrescrevem: atualização perdida clássica. Como o medidor engole exceção por
-projeto ("medir nunca pode atrapalhar o trabalho"), tudo isso acontecia calado.
-
-`n` subcontado infla `custo/n`. Erra para o lado seguro, mas erra — e o erro
-cresce com o tamanho da onda, ou seja, é pior exatamente onde a ferramenta serve.
-
-Agora cada participante grava **só o próprio arquivo**, com o id no nome, dentro
-de `onda-participantes/`. Ninguém escreve onde outro escreve. Contar é listar a
-pasta ao fechar. O marcador da onda é criado com a flag `wx` (falha se já
-existe), então dois que se acharem "primeiros" no mesmo instante não se
-sobrescrevem — o segundo desiste, e a diferença de milissegundos no `t0` não
-muda nada.
-
-O `gravarJson` ganhou repetição em EPERM/EACCES/EBUSY, que resolve a colisão de
-milissegundos, e apaga o `.tmp` quando desiste. E existe um `limparTmp()` que
-varre órfãos antigos — só os antigos, para nunca competir com gravação em curso.
-
-Depois: 12 simultâneos, 12 registrados, zero órfãos.
-
-**D34 — Atualização do Claude Code invalida a conferência.** Esta ferramenta lê
-contratos oficiais: o JSON da status line e os eventos de hook. Uma versão nova
-pode mexer neles, e o modo de falha é silencioso — o sensor continua rodando e
-só não acha mais o que procurava.
-
-A aferição passou a registrar a versão junto, e o `audit` compara com a de
-agora: *"aferido na 2.1.235, rodando a 2.2.0 — revalide com /usage"*. Custa nada
-e transforma "será que quebrou?" numa linha de saída.
-
-O `batimento.json` já guardava a versão desde o começo, mas ninguém comparava.
-
-**D35 — Quem alimenta o mural, e quando um loop é obrigatório.** Esta decisão
-mudou duas vezes durante o desenvolvimento, e a versão final é a que o dado
-sustenta.
-
-**Só sessão de terminal executa a status line.** A extensão do VS Code sobe o
-`claude` em `stream-json`, sem TUI, e nunca chama o sensor. Medido: oito
-amostras seguidas do `batimento.json`, todas da sessão do CLI, enquanto a
-sessão da extensão — a que estava sendo usada para trabalhar — tinha escrito
-pela última vez **cinco horas antes**.
-
-**Terminal aberto e parado não basta.** Ocioso, ele roda o sensor a cada 20s e
-regrava o mesmo número: `rate_limits` só se renova quando *aquela* sessão
-recebe resposta da API. O `t` avança, o percentual não.
-
-Isso tem consequência direta na medição, e havia um defeito exatamente aí: a
-guarda de frescor do medidor comparava `est.t` em vez de `tConfirmado(est)`.
-Com terminal ocioso, `est.t` avançava, a guarda passava, e a onda era gravada
-**custando 0%** — medição falsa com cara de verdadeira, que puxa a média para
-baixo. Esse é o lado *perigoso* de errar: dizer que cabem mais agentes do que
-cabem. Corrigido para comparar a confirmação (é o D24 aplicado no único lugar
-onde tinha sido esquecido).
-
-**Então, na prática:**
-
-| Onde você trabalha | O que precisa |
-|---|---|
-| Terminal (TUI) | Nada. A própria sessão renova a cada resposta, e as amostras saem limpas. |
-| Extensão do VS Code, ou web | Uma janela de terminal aberta **com um loop**, senão o mural congela. |
-
-Para o segundo caso, a receita é uma janela de CLI dedicada, no modelo mais
-barato e no esforço mínimo — ela não precisa pensar, só existir:
-
-```
-/loop 3m diga apenas: estou vivo
-```
-
-**O preço, e ele é real.** Cada batida do loop escreve no mural, o que marca
-como contaminada qualquer onda em curso. Medido: 8 das 9 ondas sujas, todas
-pelo loop, com o número de escritas batendo com a cadência (onda de 928s levou
-5 batidas). A única onda limpa foi a de 94 segundos, curta o bastante para
-caber entre duas.
-
-É exatamente por isso que existe o D32 (usar amostra suja em vez de nenhuma):
-sem ele, quem trabalha na extensão ficaria em `SEM BASE` para sempre — ou por
-falta de leitura, sem o loop, ou por contaminação, com ele. Contaminação infla
-o custo estimado, que é o lado seguro; ficar cego não é.
-
-Vale registrar que qualquer segunda sessão causa a mesma contaminação — VS Code
-e TUI abertos ao mesmo tempo já bastam. O loop só garante que aconteça sempre,
-em troca de garantir que o mural nunca congele.
-
-**D36 — A mensagem de erro é a documentação.** Quem instala não lê o README, e
-reclama que não funciona. Três situações diferentes produzem "a ferramenta não
-funciona", e o conserto de cada uma é outro — então a ferramenta detecta em qual
-delas você está e entrega o comando:
-
-| Sintoma | Causa | O que dizer |
-|---|---|---|
-| sem `batimento.json` | o sensor nunca rodou: extensão do VS Code, ou sessão não reiniciada | abra um terminal **e** rode o loop |
-| batimento velho | a janela que alimentava foi fechada | abra um terminal **e** rode o loop |
-| batimento novo, confirmação velha | terminal aberto mas ocioso | rode o loop **na janela que já existe** |
-
-O terceiro é o que mais engana: o sensor está rodando, a status line pisca, o
-countdown desce — e o número está congelado. É o D24 aparecendo na cara do
-usuário em vez de só no código.
-
-Quando está tudo certo, **nada** é dito. Aviso que sempre aparece ninguém lê.
+**D36 — A mensagem de erro é a documentação.** Quem instala não lê o README.
+Quando algo quebra, a saída diz o que quebrou e entrega o conserto. E o
+instalador **executa** o que gerou antes de declarar sucesso — no Windows um
+comando errado não dá erro, só não roda.
 
 **D37 — Config valida o tipo contra o padrão.** `cota config aviso.limiar_5h abc`
-gravava a string `"abc"`. Nada explodia: a comparação `pct < "abc"` dá `false`
-para sempre, e o aviso simplesmente parava de disparar — para sempre, sem erro e
-sem sintoma. Numa ferramenta cujo produto é o aviso, esse é o pior desfecho
-possível.
+gravava a string; a comparação `pct < "abc"` dá false para sempre e o aviso
+parava sem sintoma. Numa ferramenta cujo produto é o aviso, o pior desfecho.
 
-Agora o tipo é conferido contra `CONFIG_PADRAO`, e o intervalo também: limiar
-fora de 0–100 e margem fora de 0–1 são recusados, porque os dois desligam a
-proteção sem dizer que desligaram.
+**D38 — Poda.** Histórico e amostras são lidos inteiros a cada consulta. Sem
+poda, cada chamada passa a pagar por tudo o que já aconteceu. Sai o que tem
+mais de 14 dias, e cada arquivo tem teto de 5000 linhas. Reescrever um arquivo
+que outro processo pode estar acrescentando perde a linha dele, então a poda
+automática só reescreve com folga de um dia — uma vez por dia, não uma por
+onda — e grava atômico. `cota limpar` aceita só inteiro de 0 para cima: um
+negativo punha o corte no futuro e apagava tudo.
 
-**D38 — Podar não é faxina, é o que impede a ferramenta de estrangular a si
-mesma.** `lerHistorico()` lê **todos** os arquivos de sessão a cada invocação de
-hook, e os hooks rodam a cada mensagem e a cada subagente. Com dez sessões isso é
-nada; com mil, todo subagente passa a pagar mil leituras de arquivo. Cresce
-sozinho e ninguém percebe até ficar lento.
+## A leitura da cota
 
-Sessão sem uso há mais de 14 dias sai (as janelas de decisão são de 5h e 7d — o
-mês passado não serve para nada), e os `.jsonl` de amostra são truncados no
-limite. **A sessão mais recente nunca sai**, é ela que alimenta o mural agora. A
-poda roda quando uma onda fecha — evento raro, ao contrário de varrer diretório
-a cada hook — e por comando, com `cota limpar`.
+**D39 — A cota se lê pelo protocolo de controle do CLI.** O CLI em
+`-p --input-format stream-json --output-format stream-json` aceita, pela
+entrada padrão, as mensagens de controle que o Agent SDK usa — e uma delas é a
+que a extensão do VS Code manda para o medidor de uso dela:
 
-## Verificação de segurança
+```json
+{"type":"control_request","request_id":"cota","request":{"subtype":"get_usage","skip_behaviors":true}}
+```
 
-Nove vetores sondados com processos reais, não por leitura de código. O
-resultado, e o que foi feito com cada um:
+A resposta traz `rate_limits.limits[]` (os números do `/usage`), o
+`subscription_type` e se a conta tem limite para ler. **Não é prompt**: nenhum
+modelo é chamado, nenhuma cota é gasta, e não existe caminho em que a leitura
+vire um turno. O processo responde e sai quando a entrada fecha, em ~1,5s. O
+número é do servidor, na hora, e não depende de TUI — funciona na extensão do
+VS Code.
 
-| # | Vetor | Resultado |
+A primeira versão mandava `/usage` como prompt (`claude -p /usage`, lendo o
+`usage_report`). Funcionava, mas levava ~3,5s — quase tudo na análise de "o
+que está consumindo a sua cota", que lê os logs locais e que o
+`skip_behaviors` pula — e precisava de uma suspensão para o dia em que o
+`/usage` virasse prompt e passasse a gastar cota a cada consulta (era o D42).
+O pedido de controle elimina o risco em vez de vigiá-lo. A ideia veio do Codex,
+que lê a cota do mesmo jeito (`account/rateLimits/read` no `app-server`).
+
+O preço é o contrato: o `get_usage` não é documentado, e o método do SDK que o
+envia se chama `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET`. O
+que segura é que a própria extensão depende dele. Se mudar, a sonda diz qual
+elo quebrou — sem resposta, pedido recusado, campo sumido — e nunca inventa
+número (D36).
+
+Como a sonda roda, e por quê:
+
+| Opção | Por quê |
+|---|---|
+| `skip_behaviors: true` | pula a análise dos logs locais: ~2s a menos |
+| `--no-session-persistence` | sem ela cada leitura vira uma conversa na sua lista |
+| `--settings {"disableAllHooks":true}` | os hooks do cota leem — sem isso, recursão |
+| `--setting-sources user` | ignora configuração de projeto (D45) |
+| `--strict-mcp-config` | servidor MCP não tem nada a ver com cota |
+| `cwd` = `~/.claude/cota` | pasta só sua (D45) |
+| env `COTA_SONDA_ATIVA` | segunda trava contra recursão |
+| só `.exe` no Windows | `.cmd` exige shell, e aí os argumentos passariam pelo cmd.exe |
+
+A resposta não traz a versão do Claude Code; ela sai do nome da pasta da
+extensão (D43).
+
+Linha do tempo, pelos changelogs oficiais e pelas datas de publicação no npm:
+
+| Data | Versão | O que apareceu |
 |---|---|---|
-| 1 | Travessia de caminho por `agent_id` / `session_id` | **bloqueado** — `[^A-Za-z0-9_-]` vira `_`; canário nunca escapou |
-| 2 | Poluição de protótipo por `config.json` | `Object.prototype` global intacto; o objeto de config trocava de protótipo → corrigido com `semProto()` |
-| 3 | Tipo inválido em `config` | aceitava e desligava a proteção em silêncio → **corrigido** (D37) |
-| 4 | Chave de config com caminho de protótipo | já bloqueado |
-| 5 | Credencial gravada em disco | nenhuma — o projeto nunca lê `.credentials.json` nem chama API |
-| 6 | Caminho de instalação hostil vira injeção | possível em tese; o caminho vem de `__dirname`, então exige controlar onde você instala — quem consegue isso já executa como você |
-| 7 | Instalador executa linha lida da skill | é a própria saída dele, relida; TOCTOU dentro do home do usuário |
-| 8 | Permissão dos arquivos de estado | eram `0666` → agora `0600`. Guardam id de sessão e perfil de uso |
-| 9 | Crescimento sem limite do histórico | **corrigido** (D38) — era o mais concreto dos nove |
+| 08/06/2026 | Agent SDK 0.3.169 | o método experimental `usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()`, que envia o `get_usage` — "structured session cost, plan rate-limit, and local usage-behaviors data" |
+| 01/09/2026 | Claude Code 2.1.257 | o medidor de uso na barra lateral da extensão do VS Code |
+| 15/09/2026 | Agent SDK 0.3.273 | o `usage_report` no `/usage` headless, que a primeira versão desta sonda usou |
+| 18/09/2026 | Agent SDK 0.3.277 | a primeira menção ao `get_usage` pelo nome, numa correção |
 
-Não há rede, `eval`, `new Function` nem `require` dinâmico em nenhum arquivo de
-produção. O único `execFileSync` do runtime roda o próprio `sensor.js` com
-payload sintético, dentro do `audit`.
+O `get_usage` só aparece nos changelogs do SDK, nunca na documentação de
+referência — daí o "não documentado". Quando este projeto nasceu (19/08/2026)
+o pedido já existia havia dois meses; ninguém tinha olhado.
 
-O modelo de ameaça que sobra é honesto: quase tudo aqui pressupõe que quem
-escreve em `~/.claude/` é você. Quem não é você e consegue escrever ali já tem
-sua sessão do Claude Code — e nesse ponto a cota é o menor dos problemas.
+**Plano B — se o `get_usage` sumir, volta para o `/usage`.** A versão com
+`/usage` nunca foi commitada, então a receita fica aqui:
 
-## Em aberto
+1. Argumentos: `-p /usage --output-format stream-json --verbose`, sem nada na
+   entrada, mais as mesmas opções de isolamento da tabela acima e
+   `--model haiku`.
+2. A resposta é uma mensagem `type: "assistant"` com
+   `usage_report.rate_limits.limits[]` — **o mesmo formato** de hoje. O
+   `interpretar` só muda onde procura o `rate_limits`.
+3. **Obrigatório:** a mensagem `type: "result"` traz `num_turns` e
+   `total_cost_usd`. Qualquer um acima de zero quer dizer que o `/usage` virou
+   prompt e gastou cota: a leitura tem de se suspender até um `cota sondar`
+   deliberado. Sem essa guarda, cada hook gastaria cota.
+4. Leva ~3,5s. Do Node chama-se o executável direto; de um shell Git Bash,
+   `MSYS_NO_PATHCONV=1`, senão o `/usage` vira `C:/Program Files/Git/usage` e
+   vai ao modelo como texto — aconteceu no primeiro teste.
 
-- **Q1** — Margem de segurança: disparar só se couber com quanto de folga? (30%?)
-- **Q2** — Quantas sessões suas rodam em paralelo? (muda D6/D7 e o `refreshInterval`)
-- **Q3** — Nome do comando e da skill: `cota`?
-- **Q4** — Limiar do aviso: mesmo % para a de 5h e a semanal, ou mais baixo na semanal? (estourar a de 5h custa 2h; a semanal custa 4 dias)
-- **Q5** — Enquanto não há amostras limpas de custo por agente, o que o agente faz? Recusa por precaução, ou libera avisando que está sem base?
-- **Q6** — O `PreToolUse` de D19 pergunta a partir de quantos %?
+O sinal de que é hora: `cota audit` acusando "o claude recusou o get_usage" ou
+"não respondeu ao get_usage" depois de uma atualização do Claude Code.
+
+**D40 — Leitura por idade, uma de cada vez.** A leitura custa ~1,5s, então cada
+ponto lê só quando a última passou da sua idade: 60s para o `cota`, a admissão
+e a abertura de uma cadeia de marcos; sempre no fechamento de um trecho e no
+`audit`; 3min para o
+vigia e 10min para o aviso, que nunca esperam outra leitura (o aviso atrasa a
+sua mensagem). Parado, nada roda.
+
+Depois de uma falha, ninguém tenta de novo por 5 minutos. Sem a pausa, uma
+leitura que falha sempre (conta sem plano, sem rede, claude deslogado) era
+repetida em cada mensagem e em cada subagente, até 10s cada vez. `cota sondar`
+ignora a pausa.
+
+Com 16 `SubagentStart` no mesmo segundo seriam 16 processos do claude. Uma
+trava criada com `wx` deixa um ler; os outros esperam o resultado — esperar um
+segundo e pouco é melhor que sair com número velho. A trava carrega o **prazo** de quem a pegou
+(o timeout dele, e um pouco mais): vencido o prazo, o dono morreu — hook morto
+pelo Claude Code, Ctrl+C no meio do `cota` — e quem estava esperando assume na
+hora. Com um limite fixo de 60s, quem esperava ficava preso o próprio timeout
+inteiro (35s no `cota`) para depois decidir com número velho. O Ctrl+C solta a
+trava ao sair, e só o dono a apaga.
+
+Achado do teste: o servidor devolve o mesmo reset com ruído de fração de
+segundo (`10:59:59.506` numa leitura, `11:00:00` na seguinte), e o sistema
+compara reset por igualdade (janela virou? monotonia? mesmo trecho de ritmo?).
+O reset é arredondado ao minuto.
+
+**D41 — O trecho fecha com uma leitura pedida depois do fim.** Quem fecha um
+trecho exige uma leitura **pedida depois** daquele instante — o carimbo da
+leitura é a hora do pedido, em milissegundos, e uma leitura que já estava em
+curso não serve. Se a leitura falhar, nada vira amostra: o Δ sairia de um
+número velho, no limite 0%, medição falsa que puxa a média para baixo — o lado
+perigoso de errar. Com gente ainda em voo, o marco volta para o lugar e o
+próximo fecha um trecho maior; com o céu vazio, a cadeia acaba sem medida.
+
+E quem fecha **reivindica o trecho antes de ler**: renomeia o marco (atômico),
+e só então espera a leitura. Quem começa nesse meio-tempo não abre outra cadeia
+nem leva parte deste trecho: entra no seguinte, cujo marco quem fechou grava.
+Na primeira versão, com a onda ainda montada durante a leitura, quem começava
+ali entrava na onda que fechava — contado no `n`, barateando o custo — e a
+dele ficava sem marcador, nunca medida. O teste reproduz a corrida com uma
+leitura lenta.
+
+**D43 — O claude da extensão muda de pasta a cada atualização.** O binário
+mora em `~/.vscode/extensions/anthropic.claude-code-<versão>-<plataforma>/`.
+O caminho **nunca é gravado** — é procurado a cada leitura.
+
+"A versão mais alta" não basta: depois de uma atualização a pasta velha
+**continua no disco**, com o binário inteiro, marcada em `extensions/.obsolete`
+até o VS Code limpar; e quem diz o que está instalado é o
+`extensions/extensions.json`.
+
+| Caso | A mais alta escolheria | Agora |
+|---|---|---|
+| downgrade | a obsoleta, ainda no disco | a registrada |
+| atualização em curso | pasta nova com binário pela metade | a registrada |
+| limpeza no meio da leitura | um caminho que sumiu | o próximo candidato |
+
+Candidato que nem chega a executar passa a vez; candidato que executa e falha
+é a resposta. E a troca é dita: o `cota sondar` e o `audit` mostram "mudou de
+extensão 2.1.299 há 5min, achado sozinho" por uma semana.
+
+**D47 — Medir em trechos, não na onda inteira.** A onda inteira (D31) só
+fechava com o céu vazio — e os hooks são globais: valem para todas as sessões
+do Claude Code na máquina. No primeiro teste real, um agente de outra sessão
+rodou por mais de meia hora e manteve a onda aberta; das 08h04 às 09h47 nada
+foi medido, e os subagentes desta sessão ficaram esperando por ele.
+
+Agora a cota é lida em **marcos**, e o que ela subiu entre dois marcos é
+dividido entre os subagentes que rodaram naquele trecho, **pelo tempo que cada
+um rodou dentro dele**. Quando um subagente termina, a soma das partes dele é
+o custo, e entra na base na hora:
+
+```
+10:00 marco 40%   A e B começam
+10:03 B termina → marco 46%: 6% pelos 3min de A e de B → B custou 3%
+10:05 A termina → marco 48%: 2% só para A               → A custou 3+2 = 5%
+```
+
+- **Quando há marco novo:** quando um subagente termina e o trecho em curso já
+  tem `medidor.trecho_s` (2min), ou quando o céu esvazia. Trecho mais curto
+  fica para o próximo marco — assim a leitura não segura cada subagente que
+  termina.
+- **Divisão por tempo, não por cabeça:** quem rodou 90s num trecho leva o
+  triplo de quem rodou 30s. É uma hipótese — que todos gastam no mesmo ritmo —
+  e erra quando um gasta mais por minuto que os outros. Mas a soma das partes é
+  sempre o Δ inteiro.
+- **Agentes de outras sessões** entram na divisão como os daqui. A conversa
+  principal de cada sessão também gasta, e entra na conta: infla o custo, o
+  lado seguro.
+- **A cadeia se recupera sozinha:** sem marco, quem começa abre uma — mesmo
+  com gente em voo. Quem já rodava antes dela tem só parte do custo coberta e
+  não vira amostra (subcontaria, o lado perigoso); mas entra na divisão, para
+  não inflar a parte dos outros.
+
+## A faxina
+
+**D44 — Uma fonte só.** Com a sonda, a status line deixou de ter função: ela
+existia porque era a única coisa que enxergava a cota, e a extensão do VS Code
+nem a executa. Saíram juntos:
+
+- o sensor da status line, e o loop de terminal que mantinha ele vivo — que
+  ainda contaminava 8 de 9 medições;
+- a leitura manual (`cota leitura`) — com a sonda quebrada, a resposta honesta
+  é "sem dado", e o humano já vê o `/usage` na própria extensão;
+- a aferição contra o `/usage` e o modo desconfiado — com a leitura trazendo
+  os próprios números do `/usage`, era conferir o número com ele mesmo;
+- a detecção de "outra sessão escrevendo" — sem status line, ninguém mais
+  escreve no mural além da sonda. Outra sessão trabalhando durante uma onda
+  infla o custo medido, sem ser detectada (lado seguro);
+- o carimbo duplo de frescor, que só existia porque a status line repetia
+  valor velho com carimbo novo.
+
+O instalador remove a status line antiga de quem tinha, e os restos dela no
+estado.
+
+**D45 — Endurecimento para publicar.** Revisão de segurança antes de abrir o
+projeto, com cada achado provado ou descartado:
+
+| Achado | Conserto |
+|---|---|
+| a sonda rodava na pasta temporária, e o claude lê o `.claude/settings.json` do diretório onde roda — provado plantando um arquivo; ali há chaves que executam comando, e no Linux a pasta é o `/tmp`, de todos | `--setting-sources user` e `cwd` em `~/.claude/cota` |
+| entrada relativa no PATH (`.`) faria um `claude.exe` plantado num repositório rodar pelo hook | só entradas absolutas |
+| o `extensions.json` podia apontar para fora da pasta de extensões | só pasta filha direta, com o nome da extensão |
+| texto vindo do servidor ia direto para a saída que o agente lê | só caracteres de nome, no máximo 40 |
+| hook esperava até 30s se o claude travasse | 10s nos hooks |
+| o instalador regravava o backup a cada execução, e o original se perdia | guarda o primeiro, nunca sobrescreve |
+| não havia como desinstalar | `node instalar.js --remover`, que tira só o que é do cota |
+
+**D46 — Revisão de código.** Um `/code-review` achou 15 defeitos, quase todos
+nascidos da sonda: ela leva segundos, e isso abriu janelas que antes eram de
+milissegundos. Cada um tem teste que o reproduz; os principais estão nas
+decisões acima (D13, D38, D40, D41). Os demais:
+
+| Achado | Conserto |
+|---|---|
+| leitura "do futuro" (relógio voltou) congelava o mural: nenhuma nova a vencia, e idade negativa contava como fresca | a leitura nova sempre substitui; idade negativa é velha |
+| o audit acusava "executável não encontrado, defina COTA_CLAUDE" quando o problema era outro | aponta o elo que quebrou, com o conserto dele |
+| o instalador reconhecia hooks pela pasta do projeto; pasta movida deixava os velhos falhando ao lado de novos | reconhece pelo script; atualiza e tira duplicados |
+| a conferência do instalador culpava o node e a skill quando era a sonda que falhava | lê o JSON mesmo com código de saída 1; só a sonda é acusada |
+| o teste do instalador gravava o `node-local.txt` do projeto real | roda numa cópia do projeto |
+| o histórico lia o arquivo inteiro a cada leitura só para comparar com a última linha | lê só o fim do arquivo |
+| a política de leitura dos hooks estava copiada em três lugares | um ajudante só, `garantirFrescoHook` |
+
+## Segurança
+
+O que foi sondado com processos reais, e o resultado:
+
+| Vetor | Resultado |
+|---|---|
+| Travessia de caminho por `agent_id` | bloqueado — `[^A-Za-z0-9_-]` vira `_`; o teste usa um canário |
+| Poluição de protótipo por `config.json` | `semProto()` tira `__proto__` antes do merge |
+| Tipo inválido em `config` | recusado (D37) |
+| Credencial | nenhuma lida nem gravada; quem consulta o servidor é o Claude Code |
+| Configuração de projeto na sonda | ignorada (D45) |
+| Binário plantado no PATH ou no registro de extensões | ignorado (D45) |
+| Permissão dos arquivos de estado | `0600` |
+| Crescimento sem limite | poda (D38) |
+
+Sem `eval`, `new Function`, `require` dinâmico ou shell em código de produção —
+o teste verifica. O modelo de ameaça que sobra é honesto: quase tudo pressupõe
+que quem escreve em `~/.claude/` é você. Quem não é você e escreve ali já tem
+sua sessão do Claude Code.
 
 ## Fora de escopo
 
-- API interna da Anthropic / token do `.credentials.json`
-- Limite em número absoluto (tokens/mensagens) — a Anthropic só publica percentual
-- Qualquer coisa que crie turno de API por conta própria
+- API interna da Anthropic, token de credencial.
+- Limite em número absoluto — a Anthropic só publica percentual.
+- Qualquer coisa que crie turno de modelo por conta própria (a leitura é
+  mensagem de controle, não prompt: não existe turno).
 
 ## Dependências de realidade
 
-- `rate_limits` só existe para assinante Claude.ai Pro/Max, e só após a primeira
-  resposta da API na sessão
-- Relógio da máquina: `resets_at` é UTC do servidor; relógio torto = countdown mentiroso
-- **A status line não executa na extensão do VS Code.** Ela sobe o `claude` em
-  `--output-format stream-json`, sem TUI, e status line é recurso de terminal.
-  Confirmado também em headless (`claude -p`). Só a TUI alimenta o mural.
-- **Sub-limite por modelo é invisível.** O `/usage` mostra a semanal quebrada
-  por modelo (ex.: "Todos os modelos 62%" e "Fable 11%"), mas `rate_limits` só
-  entrega os dois agregados. Se um modelo específico estourar antes do agregado,
-  o `cota` não vê chegando.
-- **O transcript de uma sessão é uma árvore, não uma lista.** Cada mensagem tem
-  `parentUuid`, e cada cliente acoplado (extensão, TUI, web) escreve pendurando
-  na folha em que ele estava. Mesmo `session_id`, mesmo arquivo, **ramos
-  diferentes** — e o contexto de cada ramo é só a sua própria linhagem. Não
-  afeta o `cota` (o limite é da conta, não do ramo), mas afeta você: fale por
-  uma janela só, e cuidado com dois ramos editando os mesmos arquivos.
-- **Promoção muda o denominador.** Limite semanal 50% maior até 31/08/2026: 62%
-  hoje equivale a 93% do limite normal. Percentuais de antes e depois da data
-  não são comparáveis, e o ritmo aprendido salta ~50% quando ela terminar. Cada
-  janela se recalibra sozinha, mas o histórico antigo perde valor.
+- Os limites só existem para assinante Claude.ai Pro/Max.
+- O pedido `get_usage` não é documentado (D39).
+- Relógio da máquina torto = countdown mentiroso.
+- A pasta da extensão muda a cada atualização (D43).
+- Promoção muda o denominador: com o limite temporariamente maior, o percentual
+  de hoje não é comparável com o de depois, e o custo aprendido salta quando
+  ela acaba.

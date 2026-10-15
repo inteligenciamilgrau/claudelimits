@@ -12,15 +12,17 @@ skill/SKILL.md
 # segurança caso alguém rode com CLAUDE_COTA_DIR apontando para cá.
 estado.json
 config.json
-batimento.json
+historico.jsonl
+sonda.json
+sonda.trava
 aviso-ultimo.json
 vigia-ultimo.json
-onda-atual.json
+marco.json
 agentes.jsonl
-ondas.jsonl
-afericoes.jsonl
-sessoes/
+trechos.jsonl
 em-voo/
+terminados/
+acumulado/
 
 # Node
 node_modules/

@@ -30,6 +30,10 @@ try {
   const cfg = core.lerConfig();
   if (!cfg.ligado || !cfg.aviso.ligado) sair(null);          // D2
 
+  // D40 — este hook atrasa a SUA mensagem: lê raramente (aviso_s) e nunca
+  // espera outra leitura terminar.
+  require('../lib/sonda').garantirFrescoHook(cfg.sonda.aviso_s, { esperar: false });
+
   const est = core.lerEstado();
   if (!est) sair(null);
 
@@ -69,7 +73,7 @@ try {
       nowS - ult.t < cfg.aviso.repetir_min * 60) sair(null);
   core.gravarJson(core.F.avisoUltimo, { t: nowS, assinatura });
 
-  const rit = ritmo(hist, 'pct5', 'reset5', est.reset5);
+  const rit = ritmo(hist, 'pct5', 'reset5', est.reset5, est);
   // Só medição, sem projeção: o uso é por rajadas (workflow pesado, dias
   // parado, perguntas lentas), então extrapolar o ritmo atual sobre o
   // relógio descreveria errado quase sempre.
